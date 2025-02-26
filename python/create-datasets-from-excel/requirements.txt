@@ -1,0 +1,4 @@
+easyDataverse==0.4.1
+pyDataverse==0.3.4
+requests==2.32.3
+openpyxl==3.1.5
