@@ -136,8 +136,7 @@ for key, *values in ws.iter_rows(min_row=2):
     ds_contact.email = "support@dataverse.harvard.edu"
 
     if access_link_url:
-        origin_of_sources = dataset.metadatablocks["citation"].origin_of_sources
-        origin_of_sources = f'<a href="{access_link_url}">{access_link_name}</a>'
+        dataset.metadatablocks["citation"].origin_of_sources = f'<a href="{access_link_url}">{access_link_name}</a>'
 
     # Update the dataset, pushing the new fields to the server
     dataset.update()
