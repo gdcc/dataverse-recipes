@@ -109,7 +109,7 @@ for key, *values in ws.iter_rows(min_row=2):
     access_link_name = clean(values[3].value)
 
     if values[3].hyperlink:
-        access_link_url = values[3].hyperlink.display
+        access_link_url = values[3].hyperlink.target
     else:
         # In case there is no hyperlink, we set the
         # access link url to None
