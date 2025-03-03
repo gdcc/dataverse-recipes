@@ -58,6 +58,7 @@ We welcome contributions! To add a new recipe:
 - Test your code before submitting ✅
 - Update the main README if adding new categories 📝
 - Follow the existing directory structure 🏗️
+- Suggest a way to get in touch
 
 ## 💬 Support
 
