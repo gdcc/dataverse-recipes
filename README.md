@@ -60,4 +60,4 @@ We welcome contributions! To add a new recipe:
 
 ## 💬 Support
 
-For issues and questions, please open an issue in this repository. 🐛
+For issues and questions, please open an issue in this repository or discuss on [Zulip](https://dataverse.zulipchat.com/#narrow/channel/375707-community/topic/recipes/near/503105735)! 🐙
