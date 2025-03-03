@@ -1,9 +1,10 @@
-<p align="center">
-<h1>🍳 Dataverse Recipes</h1>
-A collection of code recipes and examples for interacting with Dataverse using different programming languages and tools. This repository serves as a practical resource for developers who need to integrate with Dataverse in their applications. ✨
-</p>
+<h1 align="center">🍳 Dataverse Recipes</h1>
 
-## Why This Repository?
+<p align="center">A collection of code recipes and examples for interacting with Dataverse using different programming languages and tools. This repository serves as a practical resource for developers who need to integrate with Dataverse in their applications.</p>
+
+---
+
+## Why this repository?
 
 This repository serves as a collection of examples and recipes for working with Dataverse, covering common topics such as:
 
