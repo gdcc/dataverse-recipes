@@ -19,7 +19,7 @@ The repository is organized by programming language and tool:
 - `rust/`: 🦀 Rust recipes
 - `dvcli/`: 🛠️ DVCLI recipes
 - `javascript/`: 💛 JavaScript recipes
-- `curl/`: 🌐 cURL recipes
+- `curl/`: 🌐 curl recipes
 
 
 Each language directory contains specific recipes organized by functionality or use case.
