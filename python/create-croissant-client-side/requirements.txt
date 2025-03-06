@@ -1,0 +1,1 @@
+git+https://github.com/Dans-labs/pyDataverse@development#egg=pyDataverse 
