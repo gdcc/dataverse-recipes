@@ -7,6 +7,6 @@ Please note that pyDataverse creates a Croissant file that is somewhat [differen
 ```
 python3 -m venv venv
 source venv/bin/activate
-pip install --upgrade --no-cache-dir  git+https://github.com/Dans-labs/pyDataverse@development#egg=pyDataverse --break-system-packages
+pip install -r requirements.txt
 python export-croissant.py
 ```
