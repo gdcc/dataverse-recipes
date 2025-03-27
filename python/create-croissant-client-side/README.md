@@ -8,5 +8,5 @@ Please note that pyDataverse creates a Croissant file that is somewhat [differen
 python3 -m venv venv
 source venv/bin/activate
 pip install -r requirements.txt
-python export-croissant.py
+python create-croissant-client-side.py
 ```
