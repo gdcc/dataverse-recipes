@@ -16,6 +16,7 @@ This repository serves as a collection of examples and recipes for working with 
 The repository is organized by programming language and tool:
 
 - `python/`: 🐍 Python recipes
+- `shell/`: 🐚 Shell recipes
 - `rust/`: 🦀 Rust recipes
 - `dvcli/`: 🛠️ DVCLI recipes
 
@@ -29,6 +30,10 @@ In the following sections, you can find a list of available recipes for each lan
 ### Python 🐍
 
 - [Create datasets from Excel files](create-datasets-from-excel-files) 📊
+
+### Shell 🐚
+
+- [Upload files using S3 direct upload](shell/upload_files_to_dataverse.sh)
 
 ## 🤝 Contributing
 
