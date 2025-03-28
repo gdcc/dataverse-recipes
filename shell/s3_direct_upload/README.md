@@ -4,12 +4,12 @@ A BASH utility function used to ease the direct upload of files to Amazon S3 and
 
 ## Usage
 
-There is a bash shell script under this directory named **`upload_files_to_dataverse.sh`** which can be executed in a terminal (either in a local or a remote environment) to initiate the transfer.
+There is a bash shell script under this directory named **`s3_direct_upload.sh`** which can be executed in a terminal (either in a local or a remote environment) to initiate the transfer.
 
 The code can be run in this way:
 
 ```
-bash upload_files_to_dataverse.sh
+bash s3_direct_upload.sh
 ```
 
 ## Modifying File Type
