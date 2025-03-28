@@ -29,8 +29,8 @@ In the following sections, you can find a list of available recipes for each lan
 
 ### Python 🐍
 
-- [Create datasets from Excel files](python/create-datasets-from-excel) 📊
-- [Create Croissant from the client side](python/create-croissant-client-side)
+- [Create datasets from Excel files](python/create_datasets_from_excel) 📊
+- [Create Croissant from the client side](python/create_croissant_client_side)
 
 ### Shell 🐚
 
