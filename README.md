@@ -64,6 +64,16 @@ We welcome contributions! To add a new recipe:
 - Follow the existing directory structure 🏗️
 - Suggest a way to get in touch
 
+### Naming conventions
+
+- File names should be in lowercase and use underscores to separate words (e.g. `create_dataset.py`).
+- Directory names should be in lowercase and use underscores to separate words (e.g. `create_dataset`).
+
+**Note:** If a language convention requires it, use camel/pascal case, but make sure to align with the existing naming conventions. Exceptions are:
+
+- JavaScript: Use camel/kebab case (e.g. `create-dataset.js` or `createDataset.js`).
+- Java: Use camel case (e.g. `CreateDataset.java`).
+
 ## 💬 Support
 
 For issues and questions, please open an issue in this repository or discuss on [Zulip](https://dataverse.zulipchat.com/#narrow/channel/375707-community/topic/recipes/near/503105735)! 🐙
