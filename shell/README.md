@@ -4,7 +4,7 @@ A BASH utility function used to ease the direct upload of files to Amazon S3 and
 
 ## Usage
 
-There is a bash shell script under this directory named **`upload_files_to_dataverse.sh`** which can be executed in a terminal (either in a local or a remote enviornment) to initiate the transfer.
+There is a bash shell script under this directory named **`upload_files_to_dataverse.sh`** which can be executed in a terminal (either in a local or a remote environment) to initiate the transfer.
 
 The code can be run in this way:
 
@@ -33,7 +33,7 @@ Before running the script, update the following variables to match your environm
 
 | Variable         | Description |
 |-----------------|-------------|
-| **`API_TOKEN`** | Your API token, obtainable from your Harvard Dataverse profile page. |
+| **`API_TOKEN`** | Your API token, obtainable from your Dataverse account page. |
 | **`DATAVERSE_URL`** | The Dataverse server URL (default: `https://dataverse.harvard.edu`). |
 | **`DATASET_PID`** | The DOI of your dataset registered on Dataverse (e.g., `doi:10.7910/DVN/6QOCNF`). |
 | **`SOURCE_FOLDER`** | The folder containing the files to be uploaded and registered on Dataverse. |
