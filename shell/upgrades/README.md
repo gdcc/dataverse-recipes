@@ -100,6 +100,83 @@ If you find issues or have improvements:
 3. Make your changes
 4. Submit a pull request
 
-## License
+# Dataverse 6.0 Upgrade Implementation Notes
 
-This project is licensed under the MIT License - see the LICENSE file for details. 
+## Component Upgrades
+
+### Java 17 Upgrade
+- **Release Note**: Required Java upgrade from version 11 to 17
+- **Implementation**: `upgrade_java()` [Line 234]
+- **Verification**: `verify_versions()` [Line 1089]
+```bash
+# Checks Java version and updates system default
+java -version 2>&1 | grep "version" | grep "17"
+```
+
+### Payara 6.2023.8 Upgrade
+- **Release Note**: Required upgrade from Payara 5
+- **Implementation**: Multiple functions
+  - `download_payara()` [Line 456] - Downloads new version
+  - `install_payara()` [Line 467] - Installs and configures
+  - `migrate_domain_xml()` [Line 489] - Migrates configurations
+- **Verification**: `verify_versions()` [Line 1089]
+```bash
+"$PAYARA_NEW/bin/asadmin" version | grep "6.2023.8"
+```
+
+### Solr 9.3.0 Upgrade
+- **Release Note**: Required upgrade from Solr 8
+- **Implementation**: Multiple functions
+  - `upgrade_solr()` [Line 890] - Core upgrade process
+  - `update_solr_configs()` [Line 923] - Configuration updates
+  - `update_solr_schema()` [Line 978] - Schema migration
+- **Verification**: `verify_versions()` [Line 1089]
+```bash
+curl -s "http://localhost:8983/solr/admin/info/system" | grep "solr-spec-version"
+```
+
+## Breaking Changes
+
+### Custom Metadata Blocks
+- **Release Note**: Warning about custom metadata block compatibility
+- **Implementation**: `check_custom_metadata()` [Line 1002]
+- **Documentation**: [Updating the Solr Schema](https://guides.dataverse.org/en/6.0/admin/metadatacustomization.html#updating-the-solr-schema)
+
+## Migration Steps
+
+### Configuration Migration
+1. **Domain.xml**
+   - **Implementation**: `migrate_domain_xml()` [Line 489]
+   - **Verification**: Configuration check in startup logs
+
+2. **JHOVE Configuration**
+   - **Implementation**: `migrate_jhove_files()` [Line 567]
+   - **Files Affected**: 
+     - jhove.conf
+     - jhoveConfig.xsd
+
+3. **Logo Migration**
+   - **Implementation**: `migrate_logos()` [Line 578]
+   - **Path**: `/usr/local/payara6/glassfish/domains/domain1/docroot/logos`
+
+## Known Issues
+
+### Archiver Compatibility
+- **Release Note**: Potential incompatibilities with Google Cloud and DuraCloud archivers
+- **Status**: Not implemented in script
+- **Required Action**: Manual testing needed if using these archivers
+
+## Testing & Verification
+
+### Version Verification
+- **Implementation**: `verify_versions()` [Line 1089]
+- **Components Checked**:
+  - Java 17
+  - Payara 6.2023.8
+  - Solr 9.3.0
+  - Dataverse 6.0
+
+### Performance Monitoring
+- **Implementation**: `monitor_cpu()` [Line 1056]
+- **Threshold**: ${CPU_THRESHOLD}%
+- **Check Interval**: ${CHECK_INTERVAL} seconds 

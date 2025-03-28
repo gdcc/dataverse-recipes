@@ -887,6 +887,22 @@ update_solr_schema() {
         log " - Error verifying Solr index."
         return 1
     fi
+
+    # Check for custom metadata blocks
+    check_custom_metadata
+}
+
+# Function to check for custom metadata blocks
+check_custom_metadata() {
+    log " - Checking for custom metadata blocks..."
+    local custom_fields
+    custom_fields=$(curl -s "http://localhost:8080/api/admin/index/solr/schema")
+    
+    if [[ $(echo "$custom_fields" | grep -c "customFields") -gt 0 ]]; then
+        log " - WARNING: Custom metadata blocks detected."
+        log " - Please verify all custom fields are properly indexed in Solr"
+        log " - See: https://guides.dataverse.org/en/6.0/admin/metadatacustomization.html#updating-the-solr-schema"
+    fi
 }
 
 # Function to get current CPU usage
@@ -911,6 +927,23 @@ monitor_cpu() {
         fi
         sleep "$CHECK_INTERVAL"
     done
+}
+
+# Function to verify versions
+verify_versions() {
+    log " - Verifying component versions..."
+    
+    # Check Java version
+    java -version 2>&1 | grep "version" | grep "17" || log " - WARNING: Java version may not be 17"
+    
+    # Check Payara version
+    "$PAYARA_NEW/bin/asadmin" version | grep "6.2023.8" || log " - WARNING: Payara version may not be 6.2023.8"
+    
+    # Check Solr version
+    curl -s "http://localhost:8983/solr/admin/info/system" | grep "solr-spec-version" | grep "9.3.0" || log " - WARNING: Solr version may not be 9.3.0"
+    
+    # Check Dataverse version
+    curl -s "http://localhost:8080/api/info/version" | grep "6.0" || log " - WARNING: Dataverse version may not be 6.0"
 }
 
 # Main function
@@ -1108,6 +1141,9 @@ main() {
 
     # Not needed but can be used to monitor CPU usage to see when it's done.
     monitor_cpu
+
+    # Verify versions
+    verify_versions
 }
 
 # Run the main function
