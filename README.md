@@ -29,8 +29,8 @@ In the following sections, you can find a list of available recipes for each lan
 
 ### Python 🐍
 
-- [Create datasets from Excel files](python/create-datasets-from-excel) 📊
-- [Create Croissant from the client side](python/create-croissant-client-side)
+- [Create datasets from Excel files](python/create_datasets_from_excel) 📊
+- [Create Croissant from the client side](python/create_croissant_client_side)
 
 ### Shell 🐚
 
@@ -63,6 +63,16 @@ We welcome contributions! To add a new recipe:
 - Update the main README if adding new categories 📝
 - Follow the existing directory structure 🏗️
 - Suggest a way to get in touch
+
+### Naming conventions
+
+- File names should be in lowercase and use underscores to separate words (e.g. `create_dataset.py`).
+- Directory names should be in lowercase and use underscores to separate words (e.g. `create_dataset`).
+
+**Note:** If a language convention requires it, use camel/pascal case, but make sure to align with the existing naming conventions. Exceptions are:
+
+- JavaScript: Use camel/kebab case (e.g. `create-dataset.js` or `createDataset.js`).
+- Java: Use camel case (e.g. `CreateDataset.java`).
 
 ## 💬 Support
 

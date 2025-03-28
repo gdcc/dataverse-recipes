@@ -89,7 +89,7 @@ for key, *values in ws.iter_rows(min_row=2):
     # So, we create a basic dataset using requests and
     # then update the fields later with EasyDataverse.
 
-    with open("initial-dataset.json") as f:
+    with open("initial_dataset.json") as f:
         # Use the native API to create the dataset
         response = dataverse.native_api.create_dataset(
             dataverse=COLLECTION,
@@ -136,7 +136,9 @@ for key, *values in ws.iter_rows(min_row=2):
     ds_contact.email = "support@dataverse.harvard.edu"
 
     if access_link_url:
-        dataset.metadatablocks["citation"].origin_of_sources = f'<a href="{access_link_url}">{access_link_name}</a>'
+        dataset.metadatablocks[
+            "citation"
+        ].origin_of_sources = f'<a href="{access_link_url}">{access_link_name}</a>'
 
     # Update the dataset, pushing the new fields to the server
     dataset.update()
@@ -144,5 +146,7 @@ for key, *values in ws.iter_rows(min_row=2):
     # Sleep a bit before creating the next dataset
     time.sleep(2)
 
+    # Uncomment the following line to create only one dataset
+    # break
     # Uncomment the following line to create only one dataset
     # break
