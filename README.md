@@ -34,7 +34,7 @@ In the following sections, you can find a list of available recipes for each lan
 
 ### Shell 🐚
 
-- [Upload files using S3 direct upload](shell/upload_files_to_dataverse.sh)
+- [Upload files using S3 direct upload](shell/s3_direct_upload)
 
 ## 🤝 Contributing
 
