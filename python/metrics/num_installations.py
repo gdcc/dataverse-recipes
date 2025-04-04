@@ -40,7 +40,7 @@ def main():
     metrics_json = fetch_metrics(url)
 
     if args.list:
-        for i in metrics_json:
+        for i in sorted(metrics_json, key=lambda x: x["name"].lower()):
             print(i["name"])
     else:
         print(len(metrics_json))
