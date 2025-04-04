@@ -17,6 +17,12 @@ def main():
         help="Print the installations instead of a count.",
         action="store_true",
     )
+    parser.add_argument(
+        "-v",
+        "--verbose",
+        help="Show more output.",
+        action="store_true",
+    )
     args = parser.parse_args()
     base_url = "https://hub.dataverse.org/api/installation/metrics/monthly"
     date = ""
@@ -35,7 +41,8 @@ def main():
 
     # For March 2025 we use https://hub.dataverse.org/api/installation/metrics/monthly?fromDate=2025-03&toDate=2025-04
     url = base_url + date
-    print(url)
+    if args.verbose:
+        print(f"Fetching data from {url}")
 
     metrics_json = fetch_metrics(url)
 
