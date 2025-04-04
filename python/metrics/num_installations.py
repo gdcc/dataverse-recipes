@@ -71,10 +71,14 @@ def construct_url(desired_month):
 
 
 def fetch_metrics(url):
-    response = urlrequest.urlopen(url)
-    return json.loads(
-        response.read().decode(response.info().get_param("charset") or "utf-8")
-    )
+    try:
+        response = urlrequest.urlopen(url)
+        return json.loads(
+            response.read().decode(response.info().get_param("charset") or "utf-8")
+        )
+    except Exception as e:
+        print(f"Error fetching metrics from {url}: {e}")
+        sys.exit(1)
 
 
 if __name__ == "__main__":
