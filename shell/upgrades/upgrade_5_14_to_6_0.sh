@@ -241,13 +241,13 @@ wait_for_site() {
 }
 
 # Function to upgrade Java
-# Executes the companion upgrade-java.sh script if available
+# Executes the companion upgrade_java.sh script if available
 upgrade_java() {
     log " - Upgrading Java..."
-    if [ -x "$(dirname "$0")/upgrade-java.sh" ]; then
+    if [ -x "$(dirname "$0")/upgrade_java.sh" ]; then
         log "Running Java upgrade..."
-        chmod +x "$(dirname "$0")/upgrade-java.sh"
-        "$(dirname "$0")/upgrade-java.sh"
+        chmod +x "$(dirname "$0")/upgrade_java.sh"
+        "$(dirname "$0")/upgrade_java.sh"
     else
         log "Java upgrade script not found."
         return 1

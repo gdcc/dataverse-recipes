@@ -15,7 +15,7 @@ List all upgrade scripts with links to their corresponding release notes:
 ```markdown
 ## Available Upgrade Scripts
 
-- `script-name.sh` - Upgrades Dataverse from version X.Y to [Z.W](link-to-release-notes)
+- `script_name.sh` - Upgrades Dataverse from version X.Y to [Z.W](link-to-release-notes)
 ```
 
 ## 2. Prerequisites Section
@@ -61,7 +61,7 @@ Specify required permissions and configuration steps:
 ```markdown
 2. Run the appropriate upgrade script:
    ```bash
-   ./script-name.sh
+   ./script_name.sh
    ```
 
 3. Monitoring instructions:

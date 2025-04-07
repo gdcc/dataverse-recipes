@@ -4,12 +4,12 @@ This directory contains scripts for upgrading Dataverse installations between di
 
 ## Available Upgrade Scripts
 
-- `upgrade-5-14-to-6-0.sh` - Upgrades Dataverse from version 5.14 to [6.0](https://github.com/IQSS/dataverse/releases/tag/v6.0)
-- `upgrade-6-0-to-6-1.sh` - Upgrades Dataverse from version 6.0 to [6.1](https://github.com/IQSS/dataverse/releases/tag/v6.1)
-- `upgrade-6-1-to-6-2.sh` - Upgrades Dataverse from version 6.1 to [6.2](https://github.com/IQSS/dataverse/releases/tag/v6.2)
-- `upgrade-6-2-extras.sh` - Additional configurations for Dataverse 6.2
-- `upgrade-java.sh` - Companion script for upgrading Java
-- `upgrade-exporter-croissant.sh` - Reinstalls and configures the Croissant metadata exporter
+- `upgrade_5_14_to_6_0.sh` - Upgrades Dataverse from version 5.14 to [6.0](https://github.com/IQSS/dataverse/releases/tag/v6.0)
+- `upgrade_6_0_to_6_1.sh` - Upgrades Dataverse from version 6.0 to [6.1](https://github.com/IQSS/dataverse/releases/tag/v6.1)
+- `upgrade_6_1_to_6_2.sh` - Upgrades Dataverse from version 6.1 to [6.2](https://github.com/IQSS/dataverse/releases/tag/v6.2)
+- `upgrade_6_2_extras.sh` - Additional configurations for Dataverse 6.2
+- `upgrade_java.sh` - Companion script for upgrading Java
+- `upgrade_exporter_croissant.sh` - Reinstalls and configures the Croissant metadata exporter
 
 ## Prerequisites
 
@@ -45,7 +45,7 @@ Before running any upgrade script, ensure you have:
 
 2. Run the appropriate upgrade script:
    ```bash
-   ./upgrade-5-14-to-6-0.sh
+   ./upgrade_5_14_to_6_0.sh
    ```
 
 3. Monitor the upgrade process:
