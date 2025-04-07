@@ -113,10 +113,10 @@ def checkout_commit(repo_path, commit_hash):
 
 def git_clone_or_pull(repo_path):
     if not os.path.isdir(repo_path):
-        print(f"Directory '{repo_path}' does not exist.")
         result = subprocess.run(
             ["git", "clone", f"https://github.com/IQSS/{repo_path}.git"],
             stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
             text=True,
         )
     else:
