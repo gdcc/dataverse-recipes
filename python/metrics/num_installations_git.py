@@ -11,7 +11,7 @@ def main():
     parser = argparse.ArgumentParser(
         description="Show a count or a list of Dataverse installations based on data in git."
     )
-    parser.add_argument("-d", "--date", help="A date in YYYY-MM format.", type=str)
+    parser.add_argument("-d", "--date", help="A date in YYYY-MM-DD format.", type=str)
     parser.add_argument(
         "-l",
         "--list",
@@ -34,17 +34,17 @@ def main():
         requested_date = datetime.now()
 
     # one day later because we pass the date as "before"
-    one_day_later = requested_date + timedelta(days=1)
+    before_date = requested_date + timedelta(days=1)
 
     if args.verbose:
         print(f"requested date {requested_date}")
-        print(f"one day later {one_day_later}")
+        print(f"one day later {before_date}")
 
     git_repo = "dataverse-installations"
 
     git_clone_or_pull(git_repo)
 
-    commit_hash = get_commit_hash(git_repo, one_day_later)
+    commit_hash = get_commit_hash(git_repo, before_date)
 
     if args.verbose:
         print(commit_hash)
@@ -69,10 +69,9 @@ def main():
 
 def parse_date(date_str):
     try:
-        # return datetime.strptime(date_str, "%Y-%m").strftime("%Y-%m-%d")
-        return datetime.strptime(date_str, "%Y-%m")
+        return datetime.strptime(date_str, "%Y-%m-%d")
     except ValueError as e:
-        print(f"Invalid date format: {date_str}. Expected format is YYYY-MM.")
+        print(f"Invalid date format: {date_str}. Expected format is YYYY-MM-DD.")
         sys.exit(1)
 
 
