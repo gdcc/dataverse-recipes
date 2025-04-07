@@ -64,7 +64,7 @@ def main():
         ):
             print(i["name"])
     else:
-        print(f"Number of installations: {len(data.get('installations', []))}")
+        print(len(data.get('installations', [])))
 
 
 def parse_date(date_str):
