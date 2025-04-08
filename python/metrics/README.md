@@ -13,5 +13,6 @@ This directory contains scripts for reporting metrics from and about Dataverse i
 - https://github.com/IQSS/dataverse-hub which powers https://hub.dataverse.org
 - https://github.com/siacus/dvhubexplorer
 - https://github.com/IQSS/dataverse-metrics which is legacy code that powers https://metrics.dataverse.org
+- https://github.com/gdcc/dv-metrics
 - https://guides.dataverse.org/en/latest/api/metrics.html
 - https://guides.dataverse.org/en/latest/admin/reporting-tools-and-queries.html
