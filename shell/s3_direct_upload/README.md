@@ -37,8 +37,3 @@ Before running the script, update the following variables to match your environm
 | **`DATAVERSE_URL`** | The Dataverse server URL (default: `https://dataverse.harvard.edu`). |
 | **`DATASET_PID`** | The DOI of your dataset registered on Dataverse (e.g., `doi:10.7910/DVN/6QOCNF`). |
 | **`SOURCE_FOLDER`** | The folder containing the files to be uploaded and registered on Dataverse. |
-
-
-
-
-
