@@ -1,5 +1,29 @@
 #!/bin/bash
 
+# Function to check if a command is available
+command_exists() {
+    command -v "$1" >/dev/null 2>&1
+}
+
+# Check for required commands
+required_commands=("wget" "grep" "sed")
+missing_commands=()
+
+for cmd in "${required_commands[@]}"; do
+    if ! command_exists "$cmd"; then
+        missing_commands+=("$cmd")
+    fi
+done
+
+if [ ${#missing_commands[@]} -ne 0 ]; then
+    echo "Error: The following required commands are not available:"
+    for cmd in "${missing_commands[@]}"; do
+        echo "  - $cmd"
+    done
+    echo "Please install these commands and try again."
+    exit 1
+fi
+
 # Check if the input file and persistentId are provided
 if [ $# -ne 2 ]; then
     echo "Download the files from a Dataverse dataset"
@@ -17,7 +41,7 @@ escaped_persistentId=$(echo "$persistentId" | tr '/' '_')
 
 # Function to URL decode a string
 urldecode() {
-    echo -e "${1//%/\\x}"
+    printf '%b' "${1//%/\\x}"
 }
 
 # Execute wget command
@@ -28,16 +52,16 @@ cd "$escaped_persistentId" || exit 1
 
 # Function to process an index file
 process_index() {
-    local index_file=$1
-    local folder=$2
+    local index_file="$1"
+    local folder="$2"
 
     if [ -n "$folder" ]; then
         mkdir -p "$folder"
     fi
 
     while IFS= read -r line; do
-        if [[ $line =~ href=\"(/api/access/datafile/[^\"]+)\" ]]; then
-            local href="${BASH_REMATCH[1]}"
+        if echo "$line" | grep -q 'href="/api/access/datafile/'; then
+            local href=$(echo "$line" | sed -n 's/.*href="\([^"]*\)".*/\1/p')
             local name=$(echo "$line" | sed -n 's/.*>\(.*\)<\/a>.*/\1/p')
             local old_name=$(basename "$href")
             local new_name=$(echo "$name" | tr -cd '[:alnum:]._-')
@@ -70,8 +94,8 @@ process_index "$main_dirindex"
 rm "$main_dirindex"
 
 # Find and process all index.html files
-for index_file in index.html?*; do
-    if [[ -f "$index_file" ]]; then
+for index_file in index.html\?*; do
+    if [ -f "$index_file" ]; then
         folder=$(echo "$index_file" | sed -n 's/.*folder=\([^&]*\).*/\1/p')
         folder=$(urldecode "$folder")
         process_index "$index_file" "$folder"
