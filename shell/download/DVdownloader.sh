@@ -24,27 +24,66 @@ if [ ${#missing_commands[@]} -ne 0 ]; then
     exit 1
 fi
 
-# Check if the input file, persistentId, and optional wait time are provided
-if [ $# -lt 2 ] || [ $# -gt 3 ]; then
+print_usage() {
     echo "Download the files from a Dataverse dataset"
-    echo "Currently only works for the latest published dataset version and public (non-restricted, non-embargoed) files"
-    echo "Usage: $0 <server> <persistentId> [wait_time]"
-    echo "Example: $0 https://demo.dataverse.org doi:10.5072/F2ABCDEF 0.75"
+    echo "Usage: $0 <server> <persistentId> [--wait=<wait_time>] [--apikey=<api_key>] [--version=<version>] [--ignoreForbidden]"
+    echo "Example: $0 https://demo.dataverse.org doi:10.5072/F2ABCDEF --wait=0.75 --apikey=xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx --version=1.2 --ignoreForbidden"
     echo ""
-    echo "Optional parameter:"
-    echo "  wait_time: Time in seconds to wait between file downloads (can be a fraction)."
-    echo "             For small files, a delay of 0.75 seconds would limit the script to"
-    echo "             approximately 400 files per 5 minutes, which is the current rate limit"
-    echo "             at https://dataverse.harvard.edu"
+    echo "Optional parameters:"
+    echo "  --wait=<wait_time>: Time in seconds to wait between file downloads (can be a fraction)."
+    echo "  --apikey=<api_key>: API key for accessing restricted or embargoed files"
+    echo "  --version=<version>: Specific version to download (e.g., '1.2' or ':draft')"
+    echo "  --ignoreForbidden: Continue downloading even if some files return a 403 Forbidden error"
+}
+
+# Check if the required parameters are provided
+if [ $# -lt 2 ]; then
+    print_usage
     exit 1
 fi
 
 dvserver="$1"
 persistentId="$2"
-wait_time=${3:-0}  # Default to 0 if not provided
+wait_time=0
+api_key=""
+version=""
+ignoreForbidden=false
+
+# Parse optional parameters
+shift 2
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --wait=*)
+        wait_time="${1#*=}"
+        shift
+        ;;
+        --apikey=*)
+        api_key="${1#*=}"
+        shift
+        ;;
+        --version=*)
+        version="${1#*=}"
+        shift
+        ;;
+        --ignoreForbidden)
+        ignoreForbidden=true
+        shift
+        ;;
+        *)
+        echo "Unknown parameter: $1"
+        print_usage
+        exit 1
+        ;;
+    esac
+done
 
 # Escape forward slashes in persistentId with underscores
 escaped_persistentId=$(echo "$persistentId" | tr '/' '_')
+
+# If version is set, append it to escaped_persistentId
+if [ -n "$version" ]; then
+    escaped_persistentId="${escaped_persistentId}_${version}"
+fi
 
 # Function to URL decode a string
 urldecode() {
@@ -59,14 +98,24 @@ download_file() {
     if [ -f "$filename" ] && grep -q "$filename" downloaded_files.txt; then
         echo "Skipping already downloaded file: $filename"
     else
-        if wget -c -nv --wait="$wait_time" "$url" -O "$filename"; then
+        local wget_cmd="wget -c --wait=$wait_time"
+        if [ -n "$api_key" ]; then
+            wget_cmd+=" --header=\"X-Dataverse-key: $api_key\""
+        fi
+        if eval $wget_cmd \"$url\" -O \"$filename\"; then
             echo "$filename" >> downloaded_files.txt
             echo "Successfully downloaded: $filename"
         else
-            echo "Failed to download: $filename"
-            echo "Exiting. If the problem is a temporary network error or rate limiting, you can try this script in a few minutes."
-            echo "Do not delete the contents of the $escaped_persistentId directory and the script will continue where it left off."
-            exit 1
+            local exit_code=$?
+            if [ $exit_code -eq 8 ] && $ignoreForbidden; then
+                echo "Warning: Failed to download (403 Forbidden): $filename"
+                echo "Continuing due to --ignoreForbidden flag/assuming the file is restricted/embargoed/expired."
+            else
+                echo "Failed to download: $filename"
+                echo "Exiting. If the problem is a temporary network error or rate limiting, you can try this script in a few minutes."
+                echo "Do not delete the contents of the $escaped_persistentId directory and the script will continue where it left off."
+                exit 1
+            fi
         fi
     fi
 }
@@ -77,7 +126,15 @@ cd "$escaped_persistentId" || exit 1
 
 # Execute wget command to get the main directory index
 if [ ! -f "dirindex" ]; then
-    if ! wget -nd --wait="$wait_time" "$dvserver/api/datasets/:persistentId/dirindex?persistentId=$persistentId" -O dirindex -nv; then
+    wget_cmd="wget --wait=$wait_time"
+    if [ -n "$api_key" ]; then
+        wget_cmd+=" --header=\"X-Dataverse-key: $api_key\""
+    fi
+    url="$dvserver/api/datasets/:persistentId/dirindex?persistentId=$persistentId"
+    if [ -n "$version" ]; then
+        url+="&version=$version"
+    fi
+    if ! eval $wget_cmd \"$url\" -O dirindex; then
         echo "Error: Failed to download the main directory index."
         echo "Exiting script due to download failure."
         exit 1
