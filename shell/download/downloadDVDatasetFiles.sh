@@ -1,22 +1,26 @@
 #!/bin/bash
 
 # Check if the input file and persistentId are provided
-if [ $# -ne 1 ]; then
+if [ $# -ne 2 ]; then
     echo "Download the files from a Dataverse dataset"
-    echo "Currently only works for the latest published dataset version and public (non-restricted, non-empbargoed) files without a path/directoryLabel"
+    echo "Currently only works for the latest published dataset version and public (non-restricted, non-embargoed) files without a path/directoryLabel"
 
-    echo "Usage: $0 <persistentId>"
-    echo "persistentId should be of the form doi:10.5072/F2ABCDEF"
+    echo "Usage: $0 <server> <persistentId>"
+    echo "Example: $0 https://demo.harvard.edu doi:10.5072/F2ABCDEF"
     exit 1
 fi
 
-persistentId="$1"
+dvserver="$1"
+persistentId="$2"
 
 # Execute wget command
-wget -nd -mpF -e robots=off -P "$persistentId" "https://dv.dev-aws.qdr.org/api/datasets/:persistentId/dirindex?persistentId=$persistentId"
+wget -nd -mpF -e robots=off -P "$persistentId" "$dvserver/api/datasets/:persistentId/dirindex?persistentId=$persistentId"
+
+# Escape forward slashes in persistentId with underscores
+escaped_persistentId=$(echo "$persistentId" | tr '/' '_')
 
 # Change to the persistentId directory
-cd "$persistentId" || exit 1
+cd "$escaped_persistentId" || exit 1
 
 # Find the dirindex file
 dirindex_file=$(find . -name "dirindex*" | head -n 1)
@@ -49,5 +53,8 @@ while IFS= read -r line; do
         fi
     fi
 done < "$dirindex_file"
+# Rename the dirindex file to dirindex.html
+mv "$dirindex_file" "dirindex.html"
+echo "Renamed dirindex file to dirindex.html"
 
 echo "File renaming complete."
