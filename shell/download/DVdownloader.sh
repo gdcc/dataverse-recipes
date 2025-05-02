@@ -64,6 +64,9 @@ download_file() {
             echo "Successfully downloaded: $filename"
         else
             echo "Failed to download: $filename"
+            echo "Exiting. If the problem is a temporary network error or rate limiting, you can try this script in a few minutes."
+            echo "Do not delete the contents of the $escaped_persistentId directory and the script will continue where it left off."
+            exit 1
         fi
     fi
 }
@@ -74,7 +77,11 @@ cd "$escaped_persistentId" || exit 1
 
 # Execute wget command to get the main directory index
 if [ ! -f "dirindex" ]; then
-    wget -nd -N -P "$escaped_persistentId" "$dvserver/api/datasets/:persistentId/dirindex?persistentId=$persistentId" -O dirindex -nv
+    if ! wget -nd --wait="$wait_time" "$dvserver/api/datasets/:persistentId/dirindex?persistentId=$persistentId" -O dirindex -nv; then
+        echo "Error: Failed to download the main directory index."
+        echo "Exiting script due to download failure."
+        exit 1
+    fi
 fi
 
 # Create or load the list of downloaded files
