@@ -15,25 +15,47 @@ It's particularly useful when the dataset has many files and/or a directory stru
 The script checks for these dependencies and will notify you if any are missing.
 
 ## Usage
-./DVDownload.sh <server> <persistentId>
+./DVDownloader.sh <server> <persistentId> [--wait=<wait_time>] [--apikey=<api_key>] [--version=<version>] [--ignoreForbidden]
 
 ### Parameters:
 
 - `<server>`: The base URL of the Dataverse server
 - `<persistentId>`: The persistent identifier of the dataset
 
+### Optional Parameters:
+
+- `--wait=<wait_time>`: Time in seconds to wait between file downloads (can be a fraction)
+- `--apikey=<api_key>`: API key for accessing restricted or embargoed files
+- `--version=<version>`: Specific version to download (e.g., '1.2' or ':draft')
+- `--ignoreForbidden`: Continue downloading even if some files return a 403 Forbidden error - required if you do not have access to all files in the dataset
+
 ### Example:
 
-./DVDownload.sh https://demo.dataverse.org doi:10.5072/F2ABCDEF
+./DVDownload.sh https://demo.dataverse.org doi:10.5072/F2ABCDEF --wait=0.75 --apikey=xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx --version=1.2 --ignoreForbidden
 
 ## Features
 
-- Downloads all public, non-restricted, non-embargoed, non-expired files from the latest published version of the specified Dataverse dataset
+- Downloads files from the specified Dataverse dataset
 - Organizes files into their respective folders as structured in the original dataset
 - Renames files to their original names
 - Provides progress feedback during the download and organization process
+- Supports downloading specific versions of a dataset
+- Allows access to restricted or embargoed files with an API key
+- Option to continue downloading even if some files are forbidden, i.e. if you have access to some but not all files in the dataset
+- Configurable wait time between downloads to respect server rate limits
 
 ## Output
 
-The script creates a new directory named after the persistent identifier (with forward slashes replaced by underscores) and organizes all downloaded files within this directory.
+The script creates a new directory named after the persistent identifier (with forward slashes replaced by underscores) and organizes all downloaded files within this directory. If a specific version is requested, it's appended to the directory name.
 
+## Error Handling
+
+- The script will exit if it fails to download the main directory index
+- By default, it will exit if it encounters a 403 Forbidden error, unless the `--ignoreForbidden` flag is used
+- It provides informative error messages and suggests retrying in case of temporary network issues or rate limiting
+
+## Notes
+
+- The script resumes interrupted downloads, so you can safely re-run it if it gets interrupted. You may need to wait if the issue is rate limiting at the server, or you may need to add the ignoreForbidden flag if you do not have access to all files.
+- It keeps track of downloaded files to avoid unnecessary re-downloads. Deleting the directory for the dataset will also clear progress tracking.
+- Use the `--wait` option to add a delay between downloads if you're concerned about server load or rate limiting. <tracking period in minutes * 60)/<API calls allowed>, e.g. 0.75 seconds for a rate limit of 400 api calls over 5 minutes should be a conservative estimate of what's needed with small files.
