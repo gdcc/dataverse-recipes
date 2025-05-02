@@ -24,17 +24,24 @@ if [ ${#missing_commands[@]} -ne 0 ]; then
     exit 1
 fi
 
-# Check if the input file and persistentId are provided
-if [ $# -ne 2 ]; then
+# Check if the input file, persistentId, and optional wait time are provided
+if [ $# -lt 2 ] || [ $# -gt 3 ]; then
     echo "Download the files from a Dataverse dataset"
     echo "Currently only works for the latest published dataset version and public (non-restricted, non-embargoed) files"
-    echo "Usage: $0 <server> <persistentId>"
-    echo "Example: $0 https://demo.dataverse.org doi:10.5072/F2ABCDEF"
+    echo "Usage: $0 <server> <persistentId> [wait_time]"
+    echo "Example: $0 https://demo.dataverse.org doi:10.5072/F2ABCDEF 0.75"
+    echo ""
+    echo "Optional parameter:"
+    echo "  wait_time: Time in seconds to wait between file downloads (can be a fraction)."
+    echo "             For small files, a delay of 0.75 seconds would limit the script to"
+    echo "             approximately 400 files per 5 minutes, which is the current rate limit"
+    echo "             at https://dataverse.harvard.edu"
     exit 1
 fi
 
 dvserver="$1"
 persistentId="$2"
+wait_time=${3:-0}  # Default to 0 if not provided
 
 # Escape forward slashes in persistentId with underscores
 escaped_persistentId=$(echo "$persistentId" | tr '/' '_')
@@ -45,7 +52,11 @@ urldecode() {
 }
 
 # Execute wget command
-wget -nd -mpF -e robots=off -P "$escaped_persistentId" "$dvserver/api/datasets/:persistentId/dirindex?persistentId=$persistentId" -nv
+if [ $(echo "$wait_time > 0" | bc -l) -eq 1 ]; then
+    wget -nd -mpF -e robots=off -P "$escaped_persistentId" "$dvserver/api/datasets/:persistentId/dirindex?persistentId=$persistentId" -nv --wait="$wait_time"
+else
+    wget -nd -mpF -e robots=off -P "$escaped_persistentId" "$dvserver/api/datasets/:persistentId/dirindex?persistentId=$persistentId" -nv
+fi
 
 # Change to the escaped_persistentId directory
 cd "$escaped_persistentId" || exit 1
