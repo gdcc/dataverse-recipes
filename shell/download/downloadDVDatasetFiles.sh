@@ -13,11 +13,11 @@ fi
 dvserver="$1"
 persistentId="$2"
 
-# Execute wget command
-wget -nd -mpF -e robots=off -P "$persistentId" "$dvserver/api/datasets/:persistentId/dirindex?persistentId=$persistentId"
-
 # Escape forward slashes in persistentId with underscores
 escaped_persistentId=$(echo "$persistentId" | tr '/' '_')
+
+# Execute wget command
+wget -nd -mpF -e robots=off -P "$escaped_persistentId" "$dvserver/api/datasets/:persistentId/dirindex?persistentId=$persistentId"
 
 # Change to the persistentId directory
 cd "$escaped_persistentId" || exit 1
