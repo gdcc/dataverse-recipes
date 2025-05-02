@@ -29,7 +29,7 @@ if [ $# -ne 2 ]; then
     echo "Download the files from a Dataverse dataset"
     echo "Currently only works for the latest published dataset version and public (non-restricted, non-embargoed) files"
     echo "Usage: $0 <server> <persistentId>"
-    echo "Example: $0 https://demo.harvard.edu doi:10.5072/F2ABCDEF"
+    echo "Example: $0 https://demo.dataverse.org doi:10.5072/F2ABCDEF"
     exit 1
 fi
 
