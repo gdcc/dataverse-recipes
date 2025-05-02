@@ -45,7 +45,7 @@ urldecode() {
 }
 
 # Execute wget command
-wget -nd -mpF -e robots=off -P "$escaped_persistentId" "$dvserver/api/datasets/:persistentId/dirindex?persistentId=$persistentId"
+wget -nd -mpF -e robots=off -P "$escaped_persistentId" "$dvserver/api/datasets/:persistentId/dirindex?persistentId=$persistentId" -nv
 
 # Change to the escaped_persistentId directory
 cd "$escaped_persistentId" || exit 1
