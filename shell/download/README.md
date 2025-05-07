@@ -5,6 +5,17 @@
 The Dataverse Dataset Downloader is a shell script that automates the process of downloading files from a Dataverse dataset and organizing them into their respective folders.
 It's particularly useful when the dataset has many files and/or a directory structure than needs to be preserved.
 
+## Features
+
+- Downloads files from the specified Dataverse dataset
+- Names and organizes files into their respective folders as in the specified dataset version
+- Provides progress feedback during the download
+- Tracks successful file downloads and can be restarted after interuption/failure where it left off
+- Supports downloading specific versions of a dataset including drafts
+- Allows access to restricted files with an API key
+- Option to continue downloading even if some files are forbidden, i.e. if you have access to some but not all files in the dataset
+- Configurable wait time between downloads to respect server rate limits
+
 ## Prerequisites
 
 - Bash shell (Linux or macOS)
@@ -15,7 +26,7 @@ It's particularly useful when the dataset has many files and/or a directory stru
 The script checks for these dependencies and will notify you if any are missing.
 
 ## Usage
-./DVDownloader.sh <server> <persistentId> [--wait=<wait_time>] [--apikey=<api_key>] [--version=<version>] [--ignoreForbidden]
+./dv_downloader.sh <server> <persistentId> [--wait=<wait_time>] [--apikey=<api_key>] [--version=<version>] [--ignoreForbidden]
 
 ### Parameters:
 
@@ -31,18 +42,7 @@ The script checks for these dependencies and will notify you if any are missing.
 
 ### Example:
 
-./DVDownload.sh https://demo.dataverse.org doi:10.5072/F2ABCDEF --wait=0.75 --apikey=xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx --version=1.2 --ignoreForbidden
-
-## Features
-
-- Downloads files from the specified Dataverse dataset
-- Organizes files into their respective folders as structured in the original dataset
-- Renames files to their original names
-- Provides progress feedback during the download and organization process
-- Supports downloading specific versions of a dataset
-- Allows access to restricted or embargoed files with an API key
-- Option to continue downloading even if some files are forbidden, i.e. if you have access to some but not all files in the dataset
-- Configurable wait time between downloads to respect server rate limits
+./dv_downloader.sh https://demo.dataverse.org doi:10.5072/F2ABCDEF --wait=0.75 --apikey=xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx --version=1.2 --ignoreForbidden
 
 ## Output
 
