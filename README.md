@@ -35,6 +35,7 @@ In the following sections, you can find a list of available recipes for each lan
 ### Shell 🐚
 
 - [Upload files using S3 direct upload](shell/s3_direct_upload)
+- [Download files from a dataset](shell/download)
 
 ## 🤝 Contributing
 
