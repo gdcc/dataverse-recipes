@@ -162,13 +162,12 @@ process_index() {
                 mkdir -p "$folder"
             fi
 
-            download_file "$dvserver$href" "${folder:+$folder/}$old_name"
+            download_file "$dvserver$href" "${folder:+$folder/}$new_name"
 
-            if [ -f "${folder:+$folder/}$old_name" ]; then
-                mv "${folder:+$folder/}$old_name" "${folder:+$folder/}$new_name"
-                echo "Renamed: ${folder:+$folder/}$old_name -> ${folder:+$folder/}$new_name"
+            if [ -f "${folder:+$folder/}$new_name" ]; then
+                echo "Successfully downloaded: ${folder:+$folder/}$new_name"
             else
-                echo "Warning: File '${folder:+$folder/}$old_name' not found."
+                echo "Warning: File '${folder:+$folder/}$new_name' not found."
             fi
         elif echo "$line" | grep -q 'href="/api/datasets/[0-9]*/dirindex/?.*folder='; then
             # Process subdirectories
