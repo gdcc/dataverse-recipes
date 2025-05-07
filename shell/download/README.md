@@ -3,7 +3,8 @@
 ## Purpose
 
 The Dataverse Dataset Downloader is a shell script that automates the process of downloading files from a Dataverse dataset and organizing them into their respective folders.
-It's particularly useful when the dataset has many files and/or a directory structure than needs to be preserved.
+It's particularly useful when the dataset has many files and/or a directory structure that needs to be preserved.
+
 
 ## Features
 
