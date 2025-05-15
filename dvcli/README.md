@@ -1,5 +1,5 @@
 <p align="center">  
-# Dataverse CLI Recipes 🦀
+<h1>Dataverse CLI Recipes 🦀</h1>
 </p>
 
 The Dataverse Command Line Interface (DVCLI) is a tool that allows you to manage your Dataverse instance from the command line. It is based on the [Rust-Dataverse crate](https://github.com/gdcc/rust-dataverse) which implements a subset of the Dataverse REST API. This collection of recipes demonstrates how to use DVCLI to manage your Dataverse instance. The following concepts are covered:
