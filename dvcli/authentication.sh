@@ -4,9 +4,9 @@
 # your token/url combination as a profile in your local keychain. Once used
 # your system will prompt you to allow dvcli to access your keychain.
 
-TOKEN="<TOKEN>"
-URL="<URL>"
-PROFILE="myprofile"q
+TOKEN=XXXX-XXXX
+URL=https://demo.dataverse.org
+PROFILE=myprofile
 
 dvcli auth set --name $PROFILE --token $TOKEN --url $URL
 
