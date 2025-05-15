@@ -44,3 +44,8 @@ We recommend first covering the `authentication.sh` recipe to get an idea of how
   - [Query Demo Dataverse](./search/search_demo_dv.sh)
 - [Administration](./admin)
   - [Managing collection storage drivers](./admin/storage_drivers.sh)
+
+## 📝 Contributing
+
+Not found what you were looking for? Please open an issue or submit a PR to the [DVCLI repository](https://github.com/gdcc/rust-dataverse). We are happy to extend the DVCLI with new recipes and functions!
+
