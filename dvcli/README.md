@@ -1,4 +1,6 @@
-# DVCLI Recipes
+<p align="center">  
+# Dataverse CLI Recipes 🦀
+</p>
 
 The Dataverse Command Line Interface (DVCLI) is a tool that allows you to manage your Dataverse instance from the command line. It is based on the [Rust-Dataverse crate](https://github.com/gdcc/rust-dataverse) which implements a subset of the Dataverse REST API. This collection of recipes demonstrates how to use DVCLI to manage your Dataverse instance. The following concepts are covered:
 
@@ -7,7 +9,7 @@ The Dataverse Command Line Interface (DVCLI) is a tool that allows you to manage
 - Direct Uploads
 - Search and Discovery
 
-## Installation
+## 📦 Installation
 
 DVCLI is a Rust application that can be installed using Cargo. Currently, DVCLI is in the early stages of development and is not yet available on crates.io, but can be installed directly from the GitHub repository.
 
@@ -17,7 +19,7 @@ cargo install --git https://github.com/gdcc/rust-dataverse.git --bin dvcli
 
 > Please note, that Rust needs to be installed to compile DVCLI. You can use [rustup](https://rustup.rs/) to install Rust. In the future we will provide pre-compiled binaries via brew and other package managers.
 
-## Available Recipes
+## 📚 Available Recipes
 
 We recommend first covering the `authentication.sh` recipe to get an idea of how to authenticate to your Dataverse instance, because all other recipes make use of the authenticated session. Also, if you want to verify the installation, you can run the `hello_world.sh` recipe to fetch the current version of Demo-Dataverse aka the unofficial "Hello, World!" of Dataverse.
 
