@@ -10,5 +10,11 @@
 
 export DVCLI_URL=https://dataverse.harvard.edu
 
+# List all available formats
+dvcli info exporters
+
 # Export the dataset to a file in a specific format
 dvcli dataset export --format croissant --id doi:10.7910/DVN/2SYD32 --out download/croissant.json
+
+# DVCLI checks if the given format already exists, if not it will throw an error
+dvcli dataset export --format invalid --id doi:10.7910/DVN/2SYD32 --out download/invalid.json
