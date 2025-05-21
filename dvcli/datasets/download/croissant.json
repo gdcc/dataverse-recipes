@@ -1,0 +1,290 @@
+{
+  "@context": {
+    "@language": "en",
+    "@vocab": "https://schema.org/",
+    "citeAs": "cr:citeAs",
+    "column": "cr:column",
+    "conformsTo": "dct:conformsTo",
+    "cr": "http://mlcommons.org/croissant/",
+    "data": {
+      "@id": "cr:data",
+      "@type": "@json"
+    },
+    "dataType": {
+      "@id": "cr:dataType",
+      "@type": "@vocab"
+    },
+    "dct": "http://purl.org/dc/terms/",
+    "examples": {
+      "@id": "cr:examples",
+      "@type": "@json"
+    },
+    "extract": "cr:extract",
+    "field": "cr:field",
+    "fileObject": "cr:fileObject",
+    "fileProperty": "cr:fileProperty",
+    "fileSet": "cr:fileSet",
+    "format": "cr:format",
+    "includes": "cr:includes",
+    "isLiveDataset": "cr:isLiveDataset",
+    "jsonPath": "cr:jsonPath",
+    "key": "cr:key",
+    "md5": "cr:md5",
+    "parentField": "cr:parentField",
+    "path": "cr:path",
+    "rai": "http://mlcommons.org/croissant/RAI/",
+    "recordSet": "cr:recordSet",
+    "references": "cr:references",
+    "regex": "cr:regex",
+    "repeated": "cr:repeated",
+    "replace": "cr:replace",
+    "sc": "https://schema.org/",
+    "separator": "cr:separator",
+    "source": "cr:source",
+    "subField": "cr:subField",
+    "transform": "cr:transform",
+    "wd": "https://www.wikidata.org/wiki/"
+  },
+  "@type": "sc:Dataset",
+  "citeAs": "@data{DVN/2SYD32_2017,author = {Dataverse, CIMMYT},publisher = {Harvard Dataverse},title = {Zero tillage in India},year = {2017},url = {https://doi.org/10.7910/DVN/2SYD32}}",
+  "conformsTo": "http://mlcommons.org/croissant/1.0",
+  "creator": [
+    {
+      "@type": "Person",
+      "familyName": "Dataverse",
+      "givenName": "CIMMYT",
+      "name": "Dataverse, CIMMYT"
+    }
+  ],
+  "dateModified": "2017-07-19",
+  "datePublished": "2017-07-19",
+  "description": "These data are all about the crop land information of punjab, hariana and bihar The project name is: Zero Tillage in India. Project code: C0161",
+  "distribution": [
+    {
+      "@id": "interpreted_polygon_bihar_GE_20151121_20170117.cpg",
+      "@type": "cr:FileObject",
+      "contentSize": "5",
+      "contentUrl": "https://dataverse.harvard.edu/api/access/datafile/:persistentId?persistentId=doi:10.7910/DVN/2SYD32/QBVFIU",
+      "description": "",
+      "encodingFormat": "text/plain; charset=US-ASCII",
+      "md5": "ae3b3df9970b49b6523e608759bc957d",
+      "name": "interpreted_polygon_bihar_GE_20151121_20170117.cpg"
+    },
+    {
+      "@id": "interpreted_polygon_bihar_GE_20151121_20170117.dbf",
+      "@type": "cr:FileObject",
+      "contentSize": "50146",
+      "contentUrl": "https://dataverse.harvard.edu/api/access/datafile/:persistentId?persistentId=doi:10.7910/DVN/2SYD32/N1DP21",
+      "description": "",
+      "encodingFormat": "application/dbf",
+      "md5": "4b033b107e01bc905b64bfca842cc35e",
+      "name": "interpreted_polygon_bihar_GE_20151121_20170117.dbf"
+    },
+    {
+      "@id": "interpreted_polygon_bihar_GE_20151121_20170117.prj",
+      "@type": "cr:FileObject",
+      "contentSize": "145",
+      "contentUrl": "https://dataverse.harvard.edu/api/access/datafile/:persistentId?persistentId=doi:10.7910/DVN/2SYD32/H5B2MU",
+      "description": "",
+      "encodingFormat": "text/plain; charset=US-ASCII",
+      "md5": "c742bee3d4edfc2948a2ad08de1790a5",
+      "name": "interpreted_polygon_bihar_GE_20151121_20170117.prj"
+    },
+    {
+      "@id": "interpreted_polygon_bihar_GE_20151121_20170117.sbn",
+      "@type": "cr:FileObject",
+      "contentSize": "1628",
+      "contentUrl": "https://dataverse.harvard.edu/api/access/datafile/:persistentId?persistentId=doi:10.7910/DVN/2SYD32/C1PVGR",
+      "description": "",
+      "encodingFormat": "application/sbn",
+      "md5": "bfb6e25ce25697daaf2d5c4ddb535dab",
+      "name": "interpreted_polygon_bihar_GE_20151121_20170117.sbn"
+    },
+    {
+      "@id": "interpreted_polygon_bihar_GE_20151121_20170117.sbx",
+      "@type": "cr:FileObject",
+      "contentSize": "132",
+      "contentUrl": "https://dataverse.harvard.edu/api/access/datafile/:persistentId?persistentId=doi:10.7910/DVN/2SYD32/5RBKNV",
+      "description": "",
+      "encodingFormat": "application/sbx",
+      "md5": "452bc17347fb11f45094d2f8e6164ae3",
+      "name": "interpreted_polygon_bihar_GE_20151121_20170117.sbx"
+    },
+    {
+      "@id": "interpreted_polygon_bihar_GE_20151121_20170117.shp",
+      "@type": "cr:FileObject",
+      "contentSize": "58756",
+      "contentUrl": "https://dataverse.harvard.edu/api/access/datafile/:persistentId?persistentId=doi:10.7910/DVN/2SYD32/7LSH8V",
+      "description": "",
+      "encodingFormat": "application/shp",
+      "md5": "02b0923147bd22a1082131e65eb1597d",
+      "name": "interpreted_polygon_bihar_GE_20151121_20170117.shp"
+    },
+    {
+      "@id": "interpreted_polygon_bihar_GE_20151121_20170117.shp.xml",
+      "@type": "cr:FileObject",
+      "contentSize": "7964",
+      "contentUrl": "https://dataverse.harvard.edu/api/access/datafile/:persistentId?persistentId=doi:10.7910/DVN/2SYD32/L7M4KJ",
+      "description": "",
+      "encodingFormat": "text/xml",
+      "md5": "f31d066091d04da543ce52bd06c11836",
+      "name": "interpreted_polygon_bihar_GE_20151121_20170117.shp.xml"
+    },
+    {
+      "@id": "interpreted_polygon_bihar_GE_20151121_20170117.shx",
+      "@type": "cr:FileObject",
+      "contentSize": "1348",
+      "contentUrl": "https://dataverse.harvard.edu/api/access/datafile/:persistentId?persistentId=doi:10.7910/DVN/2SYD32/PJGEWC",
+      "description": "",
+      "encodingFormat": "application/shx",
+      "md5": "bdeaa15ba06bbf1f55573b74bced1f73",
+      "name": "interpreted_polygon_bihar_GE_20151121_20170117.shx"
+    },
+    {
+      "@id": "interpreted_polygon_punjab_hariyana_GE_20151116_20170119.dbf",
+      "@type": "cr:FileObject",
+      "contentSize": "27736",
+      "contentUrl": "https://dataverse.harvard.edu/api/access/datafile/:persistentId?persistentId=doi:10.7910/DVN/2SYD32/8XMVZQ",
+      "description": "",
+      "encodingFormat": "application/dbf",
+      "md5": "a131666ff27ff014fffa3fb051073aed",
+      "name": "interpreted_polygon_punjab_hariyana_GE_20151116_20170119.dbf"
+    },
+    {
+      "@id": "interpreted_polygon_punjab_hariyana_GE_20151116_20170119.sbn",
+      "@type": "cr:FileObject",
+      "contentSize": "5884",
+      "contentUrl": "https://dataverse.harvard.edu/api/access/datafile/:persistentId?persistentId=doi:10.7910/DVN/2SYD32/QL8VLY",
+      "description": "",
+      "encodingFormat": "application/sbn",
+      "md5": "65a0c286a92edbabc283294ba2f03fed",
+      "name": "interpreted_polygon_punjab_hariyana_GE_20151116_20170119.sbn"
+    },
+    {
+      "@id": "interpreted_polygon_punjab_hariyana_GE_20151116_20170119.sbx",
+      "@type": "cr:FileObject",
+      "contentSize": "236",
+      "contentUrl": "https://dataverse.harvard.edu/api/access/datafile/:persistentId?persistentId=doi:10.7910/DVN/2SYD32/AXGDPM",
+      "description": "",
+      "encodingFormat": "application/sbx",
+      "md5": "dd07f53eddee11c1e07d5fea9034a9d9",
+      "name": "interpreted_polygon_punjab_hariyana_GE_20151116_20170119.sbx"
+    },
+    {
+      "@id": "interpreted_polygon_punjab_hariyana_GE_20151116_20170119.shp",
+      "@type": "cr:FileObject",
+      "contentSize": "245240",
+      "contentUrl": "https://dataverse.harvard.edu/api/access/datafile/:persistentId?persistentId=doi:10.7910/DVN/2SYD32/CTTASC",
+      "description": "",
+      "encodingFormat": "application/shp",
+      "md5": "42498aabe49b621ef4a54792d811d30a",
+      "name": "interpreted_polygon_punjab_hariyana_GE_20151116_20170119.shp"
+    },
+    {
+      "@id": "interpreted_polygon_punjab_hariyana_GE_20151116_20170119.shp.xml",
+      "@type": "cr:FileObject",
+      "contentSize": "7860",
+      "contentUrl": "https://dataverse.harvard.edu/api/access/datafile/:persistentId?persistentId=doi:10.7910/DVN/2SYD32/VM1IKT",
+      "description": "",
+      "encodingFormat": "text/xml",
+      "md5": "1695c1e66c7b6c0dc97f15f9a829b334",
+      "name": "interpreted_polygon_punjab_hariyana_GE_20151116_20170119.shp.xml"
+    },
+    {
+      "@id": "interpreted_polygon_punjab_hariyana_GE_20151116_20170119.shx",
+      "@type": "cr:FileObject",
+      "contentSize": "4788",
+      "contentUrl": "https://dataverse.harvard.edu/api/access/datafile/:persistentId?persistentId=doi:10.7910/DVN/2SYD32/ENL0V4",
+      "description": "",
+      "encodingFormat": "application/shx",
+      "md5": "293986e81312d8ea083bd28a88b363c5",
+      "name": "interpreted_polygon_punjab_hariyana_GE_20151116_20170119.shx"
+    },
+    {
+      "@id": "mdc_photo_mdc_00bada_cdv_photo_001_1480933049515.jpg",
+      "@type": "cr:FileObject",
+      "contentSize": "94754",
+      "contentUrl": "https://dataverse.harvard.edu/api/access/datafile/:persistentId?persistentId=doi:10.7910/DVN/2SYD32/2VKMKH",
+      "description": "",
+      "encodingFormat": "image/jpeg",
+      "md5": "4fefb1fe10d270f3bd25cc20a91ea78d",
+      "name": "mdc_photo_mdc_00bada_cdv_photo_001_1480933049515.jpg"
+    },
+    {
+      "@id": "observed_points_bihar_20170110_20170117.dbf",
+      "@type": "cr:FileObject",
+      "contentSize": "290327",
+      "contentUrl": "https://dataverse.harvard.edu/api/access/datafile/:persistentId?persistentId=doi:10.7910/DVN/2SYD32/CLEBX6",
+      "description": "",
+      "encodingFormat": "application/dbf",
+      "md5": "594e35f64be84762c706ea7d8d169a3d",
+      "name": "observed_points_bihar_20170110_20170117.dbf"
+    },
+    {
+      "@id": "observed_points_bihar_20170110_20170117.sbn",
+      "@type": "cr:FileObject",
+      "contentSize": "3372",
+      "contentUrl": "https://dataverse.harvard.edu/api/access/datafile/:persistentId?persistentId=doi:10.7910/DVN/2SYD32/TP01YP",
+      "description": "",
+      "encodingFormat": "application/sbn",
+      "md5": "aed1bfbdc8e82cfcaa47d441dffbb461",
+      "name": "observed_points_bihar_20170110_20170117.sbn"
+    },
+    {
+      "@id": "observed_points_bihar_20170110_20170117.sbx",
+      "@type": "cr:FileObject",
+      "contentSize": "156",
+      "contentUrl": "https://dataverse.harvard.edu/api/access/datafile/:persistentId?persistentId=doi:10.7910/DVN/2SYD32/N7248U",
+      "description": "",
+      "encodingFormat": "application/sbx",
+      "md5": "7c9e98efe0cab8dbb4051f0968fb2028",
+      "name": "observed_points_bihar_20170110_20170117.sbx"
+    },
+    {
+      "@id": "observed_points_bihar_20170110_20170117.shp",
+      "@type": "cr:FileObject",
+      "contentSize": "9592",
+      "contentUrl": "https://dataverse.harvard.edu/api/access/datafile/:persistentId?persistentId=doi:10.7910/DVN/2SYD32/D9JHIB",
+      "description": "",
+      "encodingFormat": "application/shp",
+      "md5": "8c28903608b09a2726e833da4fb8b10b",
+      "name": "observed_points_bihar_20170110_20170117.shp"
+    },
+    {
+      "@id": "observed_points_bihar_20170110_20170117.shp.xml",
+      "@type": "cr:FileObject",
+      "contentSize": "11778",
+      "contentUrl": "https://dataverse.harvard.edu/api/access/datafile/:persistentId?persistentId=doi:10.7910/DVN/2SYD32/GIIA30",
+      "description": "",
+      "encodingFormat": "text/xml",
+      "md5": "f2f29d9447e46dbaa88aa17f7cf28e1c",
+      "name": "observed_points_bihar_20170110_20170117.shp.xml"
+    },
+    {
+      "@id": "observed_points_bihar_20170110_20170117.shx",
+      "@type": "cr:FileObject",
+      "contentSize": "2812",
+      "contentUrl": "https://dataverse.harvard.edu/api/access/datafile/:persistentId?persistentId=doi:10.7910/DVN/2SYD32/C7N1FY",
+      "description": "",
+      "encodingFormat": "application/shx",
+      "md5": "d299821675f6dc28f1093dcaef60c6b1",
+      "name": "observed_points_bihar_20170110_20170117.shx"
+    }
+  ],
+  "includedInDataCatalog": {
+    "@type": "DataCatalog",
+    "name": "Harvard Dataverse",
+    "url": "https://dataverse.harvard.edu"
+  },
+  "keywords": [
+    "Other"
+  ],
+  "license": "http://creativecommons.org/publicdomain/zero/1.0",
+  "name": "Zero tillage in India",
+  "publisher": {
+    "@type": "Organization",
+    "name": "Harvard Dataverse"
+  },
+  "url": "https://doi.org/10.7910/DVN/2SYD32",
+  "version": "4.0"
+}
