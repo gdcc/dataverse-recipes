@@ -259,8 +259,3 @@ If necessary, you can roll back using the backup created before sync:
 - Production database credentials are only used on the production server if set
 - Local authentication mechanisms are used for database operations on the clone (passwords are optional)
 - Security-sensitive files are explicitly excluded from transfer
-
-
-
-In other scripts like @upgrade_6_1_to_6_2.sh  it breaks the script into functions and steps through the main function making maintainence on ths script simpler. Can you take a look at how that script structures steps and replicate it the fetch prod script in efforts to clean up but not remove any functionality.
-
