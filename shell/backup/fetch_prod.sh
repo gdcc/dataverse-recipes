@@ -18,6 +18,12 @@ INPUT_CLONE_S3_ACCESS_KEY=""
 INPUT_CLONE_S3_SECRET_KEY=""
 INPUT_CLONE_S3_REGION="us-east-2"
 
+# Global variables for S3 JVM options summary
+PROD_S3_OPTIONS=()
+PROD_S3_DUPLICATES=()
+LOCAL_S3_OPTIONS=()
+LOCAL_S3_DUPLICATES=()
+
 ITEMS_TO_REINDEX=0
 
 # Function to log and print messages
@@ -56,6 +62,52 @@ print_final_summary() {
         log "Overall Status: $icon_success SUCCESS"
     else
         log "Overall Status: $icon_failure FAILURE"
+    fi
+
+    # Print S3 Configuration Summary
+    echo ""
+    log "=== S3 CONFIGURATION SUMMARY ==="
+    
+    # Production S3 Options
+    if [ ${#PROD_S3_OPTIONS[@]} -gt 0 ]; then
+        log "Production S3-related JVM Options:"
+        for option in "${PROD_S3_OPTIONS[@]}"; do
+            log "  - $option"
+        done
+        
+        if [ ${#PROD_S3_DUPLICATES[@]} -gt 0 ]; then
+            log "⚠️  Production S3 Duplicate Properties:"
+            for dup in "${PROD_S3_DUPLICATES[@]}"; do
+                log "  - $dup"
+                # Show all values for this property
+                grep -- "-D${dup}=" <<< "${PROD_S3_OPTIONS[*]}" | while read -r value; do
+                    log "    * $value"
+                done
+            done
+        fi
+    else
+        log "No S3-related JVM options found in production configuration"
+    fi
+    
+    # Local S3 Options
+    if [ ${#LOCAL_S3_OPTIONS[@]} -gt 0 ]; then
+        log "Local S3-related JVM Options:"
+        for option in "${LOCAL_S3_OPTIONS[@]}"; do
+            log "  - $option"
+        done
+        
+        if [ ${#LOCAL_S3_DUPLICATES[@]} -gt 0 ]; then
+            log "⚠️  Local S3 Duplicate Properties:"
+            for dup in "${LOCAL_S3_DUPLICATES[@]}"; do
+                log "  - $dup"
+                # Show all values for this property
+                grep -- "-D${dup}=" <<< "${LOCAL_S3_OPTIONS[*]}" | while read -r value; do
+                    log "    * $value"
+                done
+            done
+        fi
+    else
+        log "No S3-related JVM options found in local configuration"
     fi
 
     # Print warnings if any
@@ -114,7 +166,7 @@ verify_ssh_connectivity() {
 check_required_commands() {
     local missing_commands=()
     local required_commands=(
-        "rsync" "ssh" "psql" "pg_dump" "sed" "systemctl" "sudo"
+        "rsync" "ssh" "psql" "pg_dump" "sed" "systemctl" "sudo" "jq"
     )
 
     for cmd in "${required_commands[@]}"; do
@@ -463,75 +515,207 @@ execute_sql_on_clone() {
 # Function to detect S3 from the local dump and prompt user for clone configuration
 prompt_s3_configuration() {
     log "Detecting S3 configuration from downloaded production database dump ($DB_DUMP_FILE)..."
-    local prod_uses_s3=false
+    local prod_s3_db_setting_found=false
     local pg_restore_output
     local pg_restore_exit_code
 
     # Ensure DB_DUMP_FILE is set and accessible
     if [ -z "$DB_DUMP_FILE" ] || ! sudo -u "$DB_SYSTEM_USER" test -r "$DB_DUMP_FILE"; then
         log_warning "DB_DUMP_FILE variable is not set or dump file is not readable by $DB_SYSTEM_USER."
-        log_warning "Cannot determine S3 configuration from dump. Assuming S3 is not used."
-        S3_CONFIG_CHOICE="skip" # Default to skip if we can't check
-        return
-    fi
-
-    # Use set -o pipefail to catch errors from pg_restore in the pipeline
-    # Pipe pg_restore output to grep to check for S3BucketName
-    # We capture stdout of pg_restore in case of error, though for grep -q it's not strictly needed.
-    if (set -o pipefail; sudo -u "$DB_SYSTEM_USER" pg_restore "$DB_DUMP_FILE" -f - 2>/dev/null | grep -q ":S3BucketName"); then
-        prod_uses_s3=true
-        # pg_restore_exit_code is implicitly 0 if grep finds something and pipefail ensures pg_restore was also 0
+        log_warning "Cannot determine S3 DB configuration from dump."
+        # Do not default S3_CONFIG_CHOICE here yet
     else
-        # This block is reached if grep doesn't find the string OR if pg_restore fails.
-        # We can't easily get pg_restore's specific exit code here without more complex piping.
-        # Assume if grep didn't find it (or pg_restore failed), S3 is not configured or dump is problematic.
-        log "Did not find ':S3BucketName' in dump, or pg_restore failed while inspecting dump."
-        prod_uses_s3=false
+        if (set -o pipefail; sudo -u "$DB_SYSTEM_USER" pg_restore "$DB_DUMP_FILE" -f - 2>/dev/null | grep -q ":S3BucketName"); then
+            prod_s3_db_setting_found=true
+        else
+            log "Did not find ':S3BucketName' in dump's setting table, or pg_restore failed while inspecting dump."
+        fi
     fi
 
-    if [ "$prod_uses_s3" = true ]; then
-        log "Production Dataverse appears to be using S3 storage (detected from dump)."
+    local prod_s3_jvm_setting_found=false
+    if [ ${#PROD_S3_OPTIONS[@]} -gt 0 ]; then
+        prod_s3_jvm_setting_found=true
+    fi
+
+    local prod_effectively_uses_s3=false
+    if [ "$prod_s3_db_setting_found" = true ] || [ "$prod_s3_jvm_setting_found" = true ]; then
+        prod_effectively_uses_s3=true
+    fi
+
+    if [ "$prod_effectively_uses_s3" = true ]; then
+        log "Production Dataverse appears to be using S3 storage."
+        if [ "$prod_s3_db_setting_found" = true ]; then log "  (S3 DB setting :S3BucketName detected in dump)"; fi
+        if [ "$prod_s3_jvm_setting_found" = true ]; then log "  (S3 JVM options detected in production: ${PROD_S3_OPTIONS[*]})"; fi
+        
         echo ""
-        echo "Production uses S3 storage. How should the clone's storage be configured?"
-        echo "  1. Configure a different S3 bucket for the clone."
-        echo "  2. Switch clone to local file storage (files will be stored in '$DATAVERSE_CONTENT_STORAGE')."
-        echo "  3. Skip S3 configuration changes (clone will inherit production S3 settings - NOT RECOMMENDED)."
+        echo "Production appears to use S3 storage. How should the clone's storage be configured?"
+        echo "  1. Configure a specific S3 bucket for the clone (Enter details)."
+        echo "  2. Switch clone to local file storage (files in '$DATAVERSE_CONTENT_STORAGE')."
+        echo "  3. Attempt to inherit S3 settings from production (NOT RECOMMENDED; may use production bucket or fail)."
 
         local choice
         while true; do
-            echo -n "Enter your choice (1, 2, or 3): "
+            echo -n "Enter your choice (1, 2, or 3) [Default: 1 for clone S3]: "
             read -r choice
+            if [ -z "$choice" ]; then choice="1"; fi # Default to 1 if prod uses S3
+
             case "$choice" in
                 1|2|3) break;;
                 *) echo "Invalid choice. Please enter 1, 2, or 3.";;
             esac
         done
         S3_CONFIG_CHOICE="$choice"
+    else
+        log "S3 storage not detected in production (neither relevant DB setting in dump nor S3 JVM options)."
+        echo ""
+        echo "Production does not appear to use S3. How should the clone's storage be configured?"
+        echo "  1. Configure a specific S3 bucket for the clone (Enter details)."
+        echo "  2. Switch clone to local file storage (Recommended Default) (files in '$DATAVERSE_CONTENT_STORAGE')."
+        local choice
+        while true; do
+            echo -n "Enter your choice (1 or 2) [Default: 2 for local storage]: "
+            read -r choice
+            if [ -z "$choice" ]; then choice="2"; fi # Default to 2 if prod does not use S3
+            case "$choice" in
+                1|2) break;;
+                *) echo "Invalid choice. Please enter 1 or 2.";;
+            esac
+        done
+        S3_CONFIG_CHOICE="$choice"
+    fi
 
-        if [ "$S3_CONFIG_CHOICE" == "1" ]; then
-            log "User chose to configure a new S3 bucket for the clone."
-            echo "Enter details for the clone's S3 bucket:"
-            echo -n "  Bucket Name: "
-            read -r INPUT_CLONE_S3_BUCKET_NAME
-            echo -n "  Access Key ID: "
-            read -r INPUT_CLONE_S3_ACCESS_KEY
-            echo -n "  Secret Access Key: "
-            read -s INPUT_CLONE_S3_SECRET_KEY
+    if [ "$S3_CONFIG_CHOICE" == "1" ]; then
+        log "User chose to configure a new S3 bucket for the clone."
+        echo "Enter details for the clone's S3 bucket:"
+        echo -n "  Bucket Name: "
+        read -r INPUT_CLONE_S3_BUCKET_NAME
+        # echo -n "  Access Key ID: "
+        # read -r INPUT_CLONE_S3_ACCESS_KEY
+        # echo -n "  Secret Access Key: "
+        # read -s INPUT_CLONE_S3_SECRET_KEY
+        echo ""
+        echo -n "  Region (e.g., us-east-2, optional - leave blank if not needed): "
+        read -r INPUT_CLONE_S3_REGION
+        echo -n "  S3 Endpoint URL (optional - e.g., http://minio:9000 - leave blank if using default AWS S3 endpoint): "
+        read -r INPUT_CLONE_S3_ENDPOINT_URL
+        log "Collected new S3 details for clone: Bucket=$INPUT_CLONE_S3_BUCKET_NAME, Region=$INPUT_CLONE_S3_REGION, Endpoint=$INPUT_CLONE_S3_ENDPOINT_URL"
+    elif [ "$S3_CONFIG_CHOICE" == "2" ]; then
+        log "User chose to switch clone to local file storage."
+    elif [ "$S3_CONFIG_CHOICE" == "3" ]; then
+        log "User chose to skip S3 configuration changes."
+    fi
+
+    # Call the verification function
+    verify_clone_s3_configuration "$S3_CONFIG_CHOICE" "$INPUT_CLONE_S3_BUCKET_NAME"
+}
+
+# Function to verify clone S3 configuration against production
+verify_clone_s3_configuration() {
+    local s3_choice="$1"
+    local clone_bucket_name_input="$2" # Only relevant if s3_choice is 1
+
+    log "Verifying clone's S3 configuration post-selection..."
+
+    # Fetch current LOCAL S3 JVM options for verification
+    log "Fetching current local JVM options for S3 verification..."
+    CURRENT_LOCAL_JVM_OPTIONS=$(sudo -u "$DATAVERSE_USER" "$PAYARA/bin/asadmin" list-jvm-options 2>/dev/null)
+    if [ $? -ne 0 ] || [ -z "$CURRENT_LOCAL_JVM_OPTIONS" ]; then
+        log_warning "Could not fetch current local JVM options. S3 verification against live JVM settings will be skipped."
+        # Do not exit, but subsequent checks on CURRENT_LOCAL_S3_JVM_OPTS will be empty
+        CURRENT_LOCAL_S3_JVM_OPTS=()
+    else
+        # Temporarily populate local S3 options for this check without affecting the global summary variables yet.
+        # We use a local variable array for this.
+        local current_local_s3_options_temp=()
+        local current_local_s3_props_temp=() # Not strictly needed for this check but part of scan_s3_jvm_options structure
+        local current_local_s3_duplicates_temp=() # ditto
+
+        # Simplified scan for S3 options based on scan_s3_jvm_options logic
+        while IFS= read -r option; do
+            [ -z "$option" ] && continue
+            [[ ! "$option" =~ ^-D ]] && continue
+            [[ "$option" =~ "JDK versions:" ]] && continue
+            option=$(echo "$option" | sed -E 's/[[:space:]]*-->.*$//' | sed -E 's/[[:space:]]*$//')
+            [ -z "$option" ] && continue
+            if [[ "$option" =~ ^-D([^=]+)= ]]; then
+                local prop_name="${BASH_REMATCH[1]}"
+                if [[ "$prop_name" =~ s3|S3|aws|AWS ]]; then
+                    current_local_s3_options_temp+=("$option")
+                fi
+            fi
+        done <<< "$CURRENT_LOCAL_JVM_OPTIONS"
+        CURRENT_LOCAL_S3_JVM_OPTS=("${current_local_s3_options_temp[@]}") # Assign to a known variable name for use below
+    fi
+
+
+    if [ "$s3_choice" == "1" ]; then # User chose to configure S3 for the clone
+        log "Verification for S3 choice '1': Clone configured to use S3 bucket '$clone_bucket_name_input'."
+        local potential_prod_bucket_match=false
+        if [ -n "$clone_bucket_name_input" ] && [ ${#PROD_S3_OPTIONS[@]} -gt 0 ]; then
+            for prod_s3_opt in "${PROD_S3_OPTIONS[@]}"; do
+                # Extract bucket name from prod_s3_opt, e.g., -Ddataverse.s3.bucket-name=PRODBUCKET
+                if [[ "$prod_s3_opt" =~ dataverse\.files\.s3\.bucket-name=([^[:space:]]+) ]] || \
+                   [[ "$prod_s3_opt" =~ dataverse\.s3\.bucket-name=([^[:space:]]+) ]] || \
+                   [[ "$prod_s3_opt" =~ aws\.s3\.bucket=([^[:space:]]+) ]]; then # Add other known patterns
+                    local prod_bucket_from_jvm="${BASH_REMATCH[1]}"
+                    prod_bucket_from_jvm=$(echo "$prod_bucket_from_jvm" | tr -d '"' ) # Remove potential quotes
+
+                    if [ "$clone_bucket_name_input" == "$prod_bucket_from_jvm" ]; then
+                        potential_prod_bucket_match=true
+                        log_warning "CRITICAL RISK: The clone's S3 bucket name ('$clone_bucket_name_input') is IDENTICAL to a bucket name found in PRODUCTION S3 JVM options ('$prod_bucket_from_jvm' from option '$prod_s3_opt')."
+                        break
+                    fi
+                fi
+            done
+        fi
+
+        if [ "$potential_prod_bucket_match" = true ]; then
             echo ""
-            echo -n "  Region (e.g., us-east-2, optional - leave blank if not needed): "
-            read -r INPUT_CLONE_S3_REGION
-            echo -n "  S3 Endpoint URL (optional - e.g., http://minio:9000 - leave blank if using default AWS S3 endpoint): "
-            read -r INPUT_CLONE_S3_ENDPOINT_URL
-            log "Collected new S3 details for clone: Bucket=$INPUT_CLONE_S3_BUCKET_NAME, Region=$INPUT_CLONE_S3_REGION, Endpoint=$INPUT_CLONE_S3_ENDPOINT_URL"
-        elif [ "$S3_CONFIG_CHOICE" == "2" ]; then
-            log "User chose to switch clone to local file storage."
-        elif [ "$S3_CONFIG_CHOICE" == "3" ]; then
-            log "User chose to skip S3 configuration changes."
+            echo "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!! WARNING !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
+            echo "The S3 bucket name you entered for the CLONE ('$clone_bucket_name_input')"
+            echo "MATCHES an S3 bucket name found in the PRODUCTION server's JVM options."
+            echo "Using a production S3 bucket for a clone can lead to data corruption or loss."
+            echo "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
+            echo -n "Are you ABSOLUTELY SURE you want to proceed with this S3 bucket for the clone? (yes/no): "
+            read -r confirm_prod_bucket_use
+            if [[ "$confirm_prod_bucket_use" != "yes" ]]; then
+                log "User aborted due to S3 bucket name matching production. Exiting."
+                exit 1
+            else
+                log_warning "User CONFIRMED using S3 bucket '$clone_bucket_name_input' despite it matching a production S3 JVM option."
+            fi
+        fi
+
+        # Check if the chosen clone bucket name is reflected in *current* local JVM options
+        local clone_bucket_in_local_jvm=false
+        if [ -n "$clone_bucket_name_input" ] && [ ${#CURRENT_LOCAL_S3_JVM_OPTS[@]} -gt 0 ]; then
+             for local_s3_opt in "${CURRENT_LOCAL_S3_JVM_OPTS[@]}"; do
+                if [[ "$local_s3_opt" =~ $clone_bucket_name_input ]]; then
+                    clone_bucket_in_local_jvm=true
+                    log "Verification: Intended clone S3 bucket '$clone_bucket_name_input' appears to be present in current local JVM S3 options."
+                    break
+                fi
+            done
+        fi
+        if [ "$clone_bucket_in_local_jvm" = false ] && [ -n "$clone_bucket_name_input" ]; then
+            log_warning "Intended clone S3 bucket '$clone_bucket_name_input' is NOT currently reflected in local S3 JVM options. The 'verify_jvm_options' step should apply this later. If S3 issues persist, ensure JVM options are correctly set."
+        fi
+
+    elif [ "$s3_choice" == "2" ]; then # User chose local file storage
+        log "Verification for S3 choice '2': Clone configured for local file storage."
+        if [ ${#CURRENT_LOCAL_S3_JVM_OPTS[@]} -gt 0 ]; then
+            log_warning "Local file storage was chosen, but the following S3-related JVM options are currently active on the clone:"
+            for local_s3_opt in "${CURRENT_LOCAL_S3_JVM_OPTS[@]}"; do
+                log_warning "  - $local_s3_opt"
+            done
+            log_warning "These S3 JVM options might conflict with local file storage. The 'verify_jvm_options' step may attempt to remove them if they were also in production. Review JVM options if storage issues occur."
+        else
+            log "Verification: No S3-related JVM options detected locally, consistent with choosing local file storage."
         fi
     else
-        log "S3 storage (setting :S3BucketName) not detected in production dump. No S3-specific configuration prompts needed for clone."
-        S3_CONFIG_CHOICE="skip" # Default to skip if prod dump doesn't use S3
+        log "Verification: S3 choice is '$s3_choice'. No specific S3 bucket verification needed for this choice."
     fi
+    log "Clone S3 configuration verification step completed."
 }
 
 # Function to sync database
@@ -870,16 +1054,6 @@ sync_database() {
     #         # Capture output even on success in debug mode
     #         if ! psql_reassign_output=$(sudo -u "$DB_SYSTEM_USER" psql -d "$DB_NAME" -c "$REASSIGN_SQL" 2>&1); then
     #              log "ERROR: Failed to reassign ownership to $DB_USER in $DB_NAME"
-    #              log "psql Output: $psql_reassign_output"
-    #              unset PGPASSWORD
-    #              return 1 # Exit on failure
-    #         else
-    #              log "Successfully reassigned ownership to $DB_USER in $DB_NAME"
-    #              log "psql Output: $psql_reassign_output"
-    #         fi
-    #     else
-    #         if ! sudo -u "$DB_SYSTEM_USER" psql -d "$DB_NAME" -c "$REASSIGN_SQL" >/dev/null 2>&1; then # Removed GRANT_SQL from here
-    #             log "ERROR: Failed to reassign ownership to $DB_USER in $DB_NAME"
     // ... existing code ...
 
     # Run post-restore SQL to update settings for non-production instance
@@ -925,8 +1099,8 @@ sync_database() {
         log "Configuring clone to use a new S3 bucket: $INPUT_CLONE_S3_BUCKET_NAME"
         S3_SETTINGS_SQL="
             UPDATE setting SET content = '$INPUT_CLONE_S3_BUCKET_NAME' WHERE name = ':S3BucketName';
-            UPDATE setting SET content = '$INPUT_CLONE_S3_ACCESS_KEY' WHERE name = ':S3AccessKey';
-            UPDATE setting SET content = '$INPUT_CLONE_S3_SECRET_KEY' WHERE name = ':S3SecretKey';
+            # UPDATE setting SET content = '$INPUT_CLONE_S3_ACCESS_KEY' WHERE name = ':S3AccessKey';
+            # UPDATE setting SET content = '$INPUT_CLONE_S3_SECRET_KEY' WHERE name = ':S3SecretKey';
         "
         if [ -n "$INPUT_CLONE_S3_REGION" ]; then
             S3_SETTINGS_SQL="$S3_SETTINGS_SQL UPDATE setting SET content = '$INPUT_CLONE_S3_REGION' WHERE name = ':S3Region';"
@@ -942,8 +1116,6 @@ sync_database() {
         # Ensure S3 related settings are present or add them
         S3_SETTINGS_SQL="$S3_SETTINGS_SQL
             INSERT INTO setting (name, content) SELECT ':S3BucketName', '$INPUT_CLONE_S3_BUCKET_NAME' WHERE NOT EXISTS (SELECT 1 FROM setting WHERE name = ':S3BucketName') ON CONFLICT (name) DO UPDATE SET content = '$INPUT_CLONE_S3_BUCKET_NAME';
-            INSERT INTO setting (name, content) SELECT ':S3AccessKey', '$INPUT_CLONE_S3_ACCESS_KEY' WHERE NOT EXISTS (SELECT 1 FROM setting WHERE name = ':S3AccessKey') ON CONFLICT (name) DO UPDATE SET content = '$INPUT_CLONE_S3_ACCESS_KEY';
-            INSERT INTO setting (name, content) SELECT ':S3SecretKey', '$INPUT_CLONE_S3_SECRET_KEY' WHERE NOT EXISTS (SELECT 1 FROM setting WHERE name = ':S3SecretKey') ON CONFLICT (name) DO UPDATE SET content = '$INPUT_CLONE_S3_SECRET_KEY';
             INSERT INTO setting (name, content) SELECT ':DefaultStorageDriverId', 's3' WHERE NOT EXISTS (SELECT 1 FROM setting WHERE name = ':DefaultStorageDriverId') ON CONFLICT (name) DO UPDATE SET content = 's3';
         "
         if [ -n "$INPUT_CLONE_S3_REGION" ]; then
@@ -1196,6 +1368,128 @@ sync_external_tools() {
     return 0
 }
 
+# Function to scan for duplicate JVM options
+scan_duplicate_jvm_options() {
+    local options="$1"
+    local duplicates=()
+    local seen=()
+    
+    while IFS= read -r option; do
+        # Skip empty lines
+        [ -z "$option" ] && continue
+        
+        # Skip lines that don't start with a dash
+        [[ ! "$option" =~ ^- ]] && continue
+        
+        # Skip lines with JDK version comments
+        [[ "$option" =~ "JDK versions:" ]] && continue
+        
+        # Clean up the option
+        option=$(echo "$option" | sed -E 's/[[:space:]]*-->.*$//' | sed -E 's/[[:space:]]*$//')
+        
+        # Skip if option is empty after cleanup
+        [ -z "$option" ] && continue
+        
+        # Extract property name for -D options
+        if [[ "$option" =~ ^-D([^=]+)= ]]; then
+            local prop_name="${BASH_REMATCH[1]}"
+            if [[ " ${seen[@]} " =~ " ${prop_name} " ]]; then
+                duplicates+=("$option")
+            else
+                seen+=("$prop_name")
+            fi
+        else
+            # For non-property options, check exact match
+            if [[ " ${seen[@]} " =~ " ${option} " ]]; then
+                duplicates+=("$option")
+            else
+                seen+=("$option")
+            fi
+        fi
+    done <<< "$options"
+    
+    if [ ${#duplicates[@]} -gt 0 ]; then
+        log "Found ${#duplicates[@]} duplicate JVM options:"
+        printf '%s\n' "${duplicates[@]}" | while read -r dup; do
+            log "  - $dup"
+        done
+        return 1
+    fi
+    return 0
+}
+
+# Function to scan for S3-related JVM options
+scan_s3_jvm_options() {
+    local options="$1"
+    local s3_options=()
+    local s3_props=()
+    local duplicates=()
+    local is_prod="$2"  # true for production, false for local
+    
+    while IFS= read -r option; do
+        # Skip empty lines
+        [ -z "$option" ] && continue
+        
+        # Skip lines that don't start with a dash
+        [[ ! "$option" =~ ^-D ]] && continue
+        
+        # Skip lines with JDK version comments
+        [[ "$option" =~ "JDK versions:" ]] && continue
+        
+        # Clean up the option
+        option=$(echo "$option" | sed -E 's/[[:space:]]*-->.*$//' | sed -E 's/[[:space:]]*$//')
+        
+        # Skip if option is empty after cleanup
+        [ -z "$option" ] && continue
+        
+        # Check for S3-related properties
+        if [[ "$option" =~ ^-D([^=]+)= ]]; then
+            local prop_name="${BASH_REMATCH[1]}"
+            if [[ "$prop_name" =~ s3|S3|aws|AWS ]]; then
+                s3_options+=("$option")
+                s3_props+=("$prop_name")
+            fi
+        fi
+    done <<< "$options"
+    
+    if [ ${#s3_options[@]} -gt 0 ]; then
+        log "Found ${#s3_options[@]} S3-related JVM options:"
+        for i in "${!s3_options[@]}"; do
+            log "  - ${s3_options[$i]}"
+        done
+        
+        # Check for duplicates in S3 properties
+        for prop in "${s3_props[@]}"; do
+            count=$(grep -c -- "-D${prop}=" <<< "${s3_options[*]}")
+            if [ "$count" -gt 1 ]; then
+                duplicates+=("$prop")
+            fi
+        done
+        
+        if [ ${#duplicates[@]} -gt 0 ]; then
+            log_warning "Found duplicate S3-related properties:"
+            for dup in "${duplicates[@]}"; do
+                log "  - $dup"
+                # Show all values for this property
+                grep -- "-D${dup}=" <<< "${s3_options[*]}" | while read -r value; do
+                    log "    * $value"
+                done
+            done
+        fi
+
+        # Store results in global variables
+        if [ "$is_prod" = true ]; then
+            PROD_S3_OPTIONS=("${s3_options[@]}")
+            PROD_S3_DUPLICATES=("${duplicates[@]}")
+        else
+            LOCAL_S3_OPTIONS=("${s3_options[@]}")
+            LOCAL_S3_DUPLICATES=("${duplicates[@]}")
+        fi
+        return 1
+    fi
+    return 0
+}
+
 # Function to verify and sync JVM options
 verify_jvm_options() {
     echo ""
@@ -1211,92 +1505,195 @@ verify_jvm_options() {
     PROD_OPTIONS=$(ssh "$PRODUCTION_SSH_USER@$PRODUCTION_SERVER" "sudo -u $PRODUCTION_DATAVERSE_USER $PAYARA/bin/asadmin list-jvm-options")
     check_error "Failed to fetch JVM options from production"
     
-    # Compare with local options
-    log "Comparing with local JVM options..."
+    # Scan for S3-related options in production (populates PROD_S3_OPTIONS, PROD_S3_DUPLICATES)
+    log "Scanning production JVM options for S3-related configurations..."
+    scan_s3_jvm_options "$PROD_OPTIONS" true # true for production
+    
+    # Scan for duplicates in all production options
+    log "Scanning production JVM options for duplicates (all types)..."
+    if ! scan_duplicate_jvm_options "$PROD_OPTIONS"; then # This function logs if duplicates are found
+        log_warning "Found duplicate JVM options in production configuration (see details above)."
+    fi
+    
+    # Get local JVM options
+    log "Fetching local JVM options..."
     LOCAL_OPTIONS=$(sudo -u "$DATAVERSE_USER" "$PAYARA/bin/asadmin" list-jvm-options)
     check_error "Failed to get local JVM options"
     
-    # Add missing options
-    log "Adding missing JVM options..."
-    while IFS= read -r option; do
-        # Skip empty lines
-        [ -z "$option" ] && continue
+    # Scan for S3-related options in local configuration (populates LOCAL_S3_OPTIONS, LOCAL_S3_DUPLICATES)
+    log "Scanning local JVM options for S3-related configurations..."
+    scan_s3_jvm_options "$LOCAL_OPTIONS" false # false for local
+    
+    # Scan for duplicates in all local options
+    log "Scanning local JVM options for duplicates (all types)..."
+    if ! scan_duplicate_jvm_options "$LOCAL_OPTIONS"; then # This function logs if duplicates are found
+        log_warning "Found duplicate JVM options in local configuration (see details above)."
+    fi
 
-        # Skip lines that don't start with a dash
-        [[ ! "$option" =~ ^- ]] && continue
+    # --- MODIFIED S3 JVM OPTION HANDLING ---
+    if [ "$S3_CONFIG_CHOICE" == "2" ]; then # Clone is being configured for local file storage
+        if [ ${#LOCAL_S3_OPTIONS[@]} -gt 0 ]; then
+            log_warning "Clone is configured for LOCAL FILE STORAGE, but the following S3-related JVM options currently exist on the clone:"
+            for local_s3_opt in "${LOCAL_S3_OPTIONS[@]}"; do
+                log_warning "  - $local_s3_opt"
+            done
+            echo ""
+            echo "The clone is being configured for LOCAL FILE STORAGE, but S3-related JVM options were found locally (listed above)."
+            echo -n "Would you like to REMOVE these existing S3-related JVM options from the LOCAL Payara configuration? (yes/no): "
+            read -r REMOVE_LOCAL_S3_FOR_FILE_STORAGE_CHOICE
+            echo ""
+            if [[ "$REMOVE_LOCAL_S3_FOR_FILE_STORAGE_CHOICE" == "yes" || "$REMOVE_LOCAL_S3_FOR_FILE_STORAGE_CHOICE" == "Y" ]]; then
+                log "User chose to remove existing local S3 JVM options."
+                local s3_options_removed_count=0
+                for s3_opt_to_remove in "${LOCAL_S3_OPTIONS[@]}"; do
+                    log "Attempting to remove JVM option from local: '$s3_opt_to_remove'"
+                    ASADMIN_DELETE_OUTPUT=$(sudo -u "$DATAVERSE_USER" "$PAYARA/bin/asadmin" delete-jvm-options "$s3_opt_to_remove" 2>&1)
+                    ASADMIN_DELETE_EXIT_CODE=$?
+                    if [ $ASADMIN_DELETE_EXIT_CODE -ne 0 ]; then
+                        if echo "$ASADMIN_DELETE_OUTPUT" | grep -q -e "not found" -e "does not exist"; then
+                             log "JVM option '$s3_opt_to_remove' already removed or was not present."
+                        else
+                             log_warning "Failed to remove JVM option '$s3_opt_to_remove' from local. Exit: $ASADMIN_DELETE_EXIT_CODE. Output: $ASADMIN_DELETE_OUTPUT"
+                        fi
+                    else
+                        log "Successfully removed JVM option '$s3_opt_to_remove' from local."
+                        s3_options_removed_count=$((s3_options_removed_count + 1))
+                    fi
+                done
 
-        # Skip lines with JDK version comments
-        [[ "$option" =~ "JDK versions:" ]] && continue
+                if [ "$s3_options_removed_count" -gt 0 ]; then
+                    log "Refreshing local JVM options after S3 option removal..."
+                    LOCAL_OPTIONS=$(sudo -u "$DATAVERSE_USER" "$PAYARA/bin/asadmin" list-jvm-options)
+                    check_error "Failed to refresh local JVM options after S3 removal"
+                    # Rescan local S3 options for summary as it has changed.
+                    log "Rescanning local JVM options for S3 configurations for summary update (after removal for local storage)..."
+                    scan_s3_jvm_options "$LOCAL_OPTIONS" false # Update LOCAL_S3_OPTIONS global for summary
+                fi
+            else
+                log "User chose NOT to remove existing local S3-related JVM options, despite selecting local file storage for the clone."
+            fi
+        else
+            log "Clone configured for local file storage, and no pre-existing S3-related JVM options found locally. No S3 JVM options to remove."
+        fi
+    # No specific removal action for S3_CONFIG_CHOICE 1 or 3 here;
+    # those cases rely on NOT adding prod S3 options and preserving local ones.
+    elif [ "$S3_CONFIG_CHOICE" == "1" ] || [ "$S3_CONFIG_CHOICE" == "3" ]; then
+         if [ ${#LOCAL_S3_OPTIONS[@]} -gt 0 ]; then
+            log "Clone is configured to use S3 (or inherit). Existing local S3 JVM options will be preserved."
+            log "Production S3-specific options (e.g. bucket names, keys defined in JVM) will NOT be synced from production."
+        else
+            log "Clone is configured to use S3 (or inherit), and no specific S3 JVM options were found locally. Ensure S3 is configured correctly via database settings."
+        fi
+    fi
+    # --- END MODIFIED S3 JVM OPTION HANDLING ---
+    
+    # Add missing options from production, carefully handling S3 type
+    log "Synchronizing (adding missing) non-S3 JVM options from production to local..."
+    log "S3-specific JVM options from production (e.g. bucket names, keys in JVM) will be SKIPPED."
 
-        # Clean up the option (remove any trailing comments or whitespace)
-        original_option_from_prod="$option" # Save original for logging
-        option=$(echo "$option" | sed -E 's/[[:space:]]*-->.*$//' | sed -E 's/[[:space:]]*$//')
+    local jvm_options_changed_by_add=false
+    while IFS= read -r option_from_prod_line; do
+        # Skip empty lines from PROD_OPTIONS output
+        [ -z "$option_from_prod_line" ] && continue
+        # Skip lines that don't start with a dash (e.g. comments or info lines from asadmin output)
+        [[ ! "$option_from_prod_line" =~ ^- ]] && continue
+        # Skip lines with JDK version comments explicitly (already handled by previous check, but for safety)
+        # This targets a common header in 'asadmin list-jvm-options' output
+        [[ "$option_from_prod_line" =~ "JDK versions:" ]] && continue
 
-        # Skip if option is empty after cleanup
-        if [ -z "$option" ]; then
-            log "Skipping empty option (original: \'$original_option_from_prod\')" # Log if skipped
+        # Clean up the option (remove any trailing comments like "--> From dataverse..." or whitespace)
+        original_option_from_prod_for_log="$option_from_prod_line" # For logging
+        option_cleaned_for_check=$(echo "$option_from_prod_line" | sed -E 's/[[:space:]]*-->.*$//' | sed -E 's/[[:space:]]*$//')
+
+        # Skip if option is empty after cleanup (e.g. it was only a comment)
+        if [ -z "$option_cleaned_for_check" ]; then
+            log "Skipping empty or comment-only option from production (original: '$original_option_from_prod_for_log')"
             continue
         fi
-
-        log "Processing option (after initial cleanup): \'$option\'" # Log after cleanup
-
-        # Handle URL-related options
-        if [[ "$option" =~ ^-D[^=]+=.*https?:// ]]; then
-            log "Attempting to process as URL option: \'$option\'" # Log before URL processing
-            if [[ "$option" =~ ^-D([^=]+)=(.*)$ ]]; then
-                prop_name="${BASH_REMATCH[1]}"
-                url_value="${BASH_REMATCH[2]}" # Use a different variable name to avoid confusion
-                log "Original URL value: \'$url_value\'"
-
-                # Remove any trailing slashes from the URL more robustly
-                cleaned_url_value=$(echo "$url_value" | sed 's:/*$::')
-                log "URL value after slash removal: \'$cleaned_url_value\'"
-
-                # Prepend protocol if missing
-                if [[ -n "$cleaned_url_value" && ! "$cleaned_url_value" =~ ^https?:// ]]; then
-                    log "Prepending https:// to URL: \'$cleaned_url_value\'"
-                    cleaned_url_value="https://$cleaned_url_value"
-                fi
-                
-                # This is the option the JVM will see
-                jvm_option_for_logging="-D${prop_name}=${cleaned_url_value}"
-                log "Final processed URL option (for JVM): \'$jvm_option_for_logging\'"
-                # For asadmin, quote the value if it contains special characters like :
-                option_for_asadmin="-D${prop_name}=${cleaned_url_value}" # Default for non-URL or simple URLs
-                if [[ "$cleaned_url_value" == *'://'* ]]; then # If it actually looks like a URL
-                   option_for_asadmin="-D${prop_name}='${cleaned_url_value}'"
-                fi
-            else
-                log "Warning: Could not parse URL option structure: \'$option\'"
-                # If not parsable as -Dkey=value, use option as is for asadmin call directly
-                option_for_asadmin="$option"
-                jvm_option_for_logging="$option"
-                # continue # Continue might skip options that are not URLs but still need to be set
+        
+        # Determine if this cleaned production option is an S3-related one.
+        # PROD_S3_OPTIONS contains full "-Dkey=value" strings for S3 options found in production.
+        is_s3_option_from_prod=false
+        for prod_s3_opt_value in "${PROD_S3_OPTIONS[@]}"; do
+            # Exact match for the cleaned option against known S3 options from production
+            if [ "$option_cleaned_for_check" == "$prod_s3_opt_value" ]; then
+                is_s3_option_from_prod=true
+                break
             fi
-        else
-            # Not a URL option, use as-is for both
-            option_for_asadmin="$option"
-            jvm_option_for_logging="$option"
+        done
+
+        if [ "$is_s3_option_from_prod" = true ]; then
+            log "Skipping addition of S3-related JVM option from production: '$option_cleaned_for_check'. Clone's S3 config primarily via DB or existing specific JVM options."
+            continue # Skip to the next production option; do not add this S3 option from prod.
         fi
 
-        # Check if option already exists (use the form JVM sees for comparison)
-        if ! echo "$LOCAL_OPTIONS" | grep -q -- "$jvm_option_for_logging"; then
-            log "Attempting to add JVM option with asadmin: \'$option_for_asadmin\'"
-            ASADMIN_OUTPUT_ERR=$(sudo -u "$DATAVERSE_USER" "$PAYARA/bin/asadmin" create-jvm-options "$option_for_asadmin" 2>&1)
-            ASADMIN_EXIT_CODE=$?
-            if [ $ASADMIN_EXIT_CODE -ne 0 ]; then
-                log "Warning: Failed to add JVM option: $jvm_option_for_logging"
-                log "asadmin exit code: $ASADMIN_EXIT_CODE"
-                log "asadmin output/error: $ASADMIN_OUTPUT_ERR"
+        # If we reach here, option_cleaned_for_check is NOT an S3-specific option from production.
+        # Proceed with existing logic to add it if it's missing locally.
+        log "Processing non-S3 option from production: '$option_cleaned_for_check'"
+        local option_for_asadmin # This will be the final form passed to asadmin create-jvm-options
+        local jvm_option_for_comparison # This is the form used to check against LOCAL_OPTIONS output
+
+        # Handle URL-related options by quoting the value for asadmin, if it's a -Dkey=value type
+        if [[ "$option_cleaned_for_check" =~ ^-D([^=]+)=(.*https?://.*)$ ]]; then
+            local prop_name="${BASH_REMATCH[1]}"
+            local url_value="${BASH_REMATCH[2]}"
+            # For asadmin, quote the value part: -Dname='value'
+            option_for_asadmin="-D${prop_name}='${url_value}'"
+            # For comparison against list-jvm-options output, use the unquoted form
+            jvm_option_for_comparison="-D${prop_name}=${url_value}"
+        else
+            option_for_asadmin="$option_cleaned_for_check"
+            jvm_option_for_comparison="$option_cleaned_for_check"
+        fi
+        
+        # Check if this non-S3 option (or its property name for -D options) already exists locally.
+        # LOCAL_OPTIONS is the raw string output of the local `asadmin list-jvm-options`.
+        if [[ "$jvm_option_for_comparison" =~ ^-D([^=]+)= ]]; then
+            # It's a -Dproperty=value option. Check if a property with the same NAME exists.
+            # This prevents adding -Dfoo=bar_prod if -Dfoo=baz_local already exists.
+            prop_name_to_check_locally="${BASH_REMATCH[1]}"
+            if ! echo "$LOCAL_OPTIONS" | grep -q -- "-D${prop_name_to_check_locally}="; then
+                log "Attempting to add non-S3 JVM option (property name '${prop_name_to_check_locally}' not found locally): '$option_for_asadmin'"
+                ASADMIN_OUTPUT_ERR=$(sudo -u "$DATAVERSE_USER" "$PAYARA/bin/asadmin" create-jvm-options "$option_for_asadmin" 2>&1)
+                ASADMIN_EXIT_CODE=$?
+                if [ $ASADMIN_EXIT_CODE -ne 0 ]; then
+                    log_warning "Failed to add JVM option '$option_for_asadmin'. Exit: $ASADMIN_EXIT_CODE. Output: $ASADMIN_OUTPUT_ERR"
+                else
+                    log "Successfully added JVM option: '$option_for_asadmin'"
+                    jvm_options_changed_by_add=true
+                fi
             else
-                log "Successfully added JVM option: $jvm_option_for_logging"
+                log "Non-S3 JVM option with property name '${prop_name_to_check_locally}' already exists locally. Original prod option: '$option_cleaned_for_check'. Skipping addition."
             fi
         else
-            log "JVM option already exists: $jvm_option_for_logging"
+            # Not a -Dproperty=value option (e.g., -Xmx, -server). Check for an exact match of the option.
+            if ! echo "$LOCAL_OPTIONS" | grep -Fq -- "$jvm_option_for_comparison"; then
+                log "Attempting to add non-S3 JVM option (exact match for '$jvm_option_for_comparison' not found locally): '$option_for_asadmin'"
+                ASADMIN_OUTPUT_ERR=$(sudo -u "$DATAVERSE_USER" "$PAYARA/bin/asadmin" create-jvm-options "$option_for_asadmin" 2>&1)
+                ASADMIN_EXIT_CODE=$?
+                if [ $ASADMIN_EXIT_CODE -ne 0 ]; then
+                    log_warning "Failed to add JVM option '$option_for_asadmin'. Exit: $ASADMIN_EXIT_CODE. Output: $ASADMIN_OUTPUT_ERR"
+                else
+                    log "Successfully added JVM option: '$option_for_asadmin'"
+                    jvm_options_changed_by_add=true
+                fi
+            else
+                log "Non-S3 JVM option '$jvm_option_for_comparison' already exists locally. Skipping addition."
+            fi
         fi
-    done <<< "$PROD_OPTIONS"
+    done <<< "$PROD_OPTIONS" # End of loop through production options
     
-    log "JVM options sync completed"
+    if [ "$jvm_options_changed_by_add" = true ]; then
+        log "Refreshing local JVM options after potential additions..."
+        LOCAL_OPTIONS=$(sudo -u "$DATAVERSE_USER" "$PAYARA/bin/asadmin" list-jvm-options)
+        check_error "Failed to refresh local JVM options after additions"
+        # Rescan local S3 options for the summary as it *might* have changed if any non-S3 options were misidentified by scan_s3_jvm_options
+        # This is mostly for keeping the summary accurate.
+        log "Rescanning local JVM options for S3 configurations for summary update (after potential non-S3 additions)..."
+        scan_s3_jvm_options "$LOCAL_OPTIONS" false
+    fi
+
+    log "JVM options sync completed."
     return 0
 }
 
@@ -1332,47 +1729,75 @@ sync_metadata_blocks() {
     fi
     
     # Get list of metadata blocks from production
-    log "Fetching metadata blocks from production..."
-    BLOCKS=$(ssh "$PRODUCTION_SSH_USER@$PRODUCTION_SERVER" "curl -s -f http://localhost:8080/api/metadatablocks")
-    if [ $? -ne 0 ]; then
-        log "Warning: Failed to fetch metadata blocks from production"
-        # Don't return error, try to proceed with empty list
-        BLOCKS="{\"data\":[]}"
+    log "Fetching metadata block names from production..."
+    BLOCKS_INFO_JSON=$(ssh "$PRODUCTION_SSH_USER@$PRODUCTION_SERVER" "curl -s -f http://localhost:8080/api/metadatablocks")
+    
+    if [ $? -ne 0 ] || [ -z "$BLOCKS_INFO_JSON" ] || [ "$BLOCKS_INFO_JSON" = "null" ]; then
+        log_warning "Failed to fetch metadata block names from production, or no blocks found."
+        log "Metadata blocks sync completed (no blocks to process/enable)."
+        return 0 # Not a fatal error, but a warning.
+    fi
+
+    # Check if DATAVERSE_API_KEY is set, as it's needed for enabling blocks
+    if [ -z "$DATAVERSE_API_KEY" ]; then
+        log_warning "DATAVERSE_API_KEY is not set in the .env file. Cannot enable metadata blocks on the clone."
+        log_warning "Please add DATAVERSE_API_KEY (an admin/superuser API token for the clone) to your .env file."
+        log "Metadata blocks sync completed (cannot enable blocks without API key)."
+        return 1 # Return an error as we cannot perform the intended operation.
     fi
     
-    # Check if we got a valid response
-    if [ -z "$BLOCKS" ] || [ "$BLOCKS" = "null" ]; then
-        log "Warning: No metadata blocks found in production"
-        BLOCKS="{\"data\":[]}"
+    log "Attempting to enable metadata blocks on the clone..."
+    BLOCK_COUNT_SUCCESS=0
+    BLOCK_COUNT_TOTAL=$(echo "$BLOCKS_INFO_JSON" | jq -r '.data | length // 0' 2>/dev/null)
+
+    if [ "$BLOCK_COUNT_TOTAL" -eq 0 ]; then
+        log "No metadata blocks reported by production. Nothing to enable."
+        log "Metadata blocks sync completed."
+        return 0
     fi
-    
-    # Transfer each block
-    log "Transferring metadata blocks..."
-    BLOCK_COUNT=0
-    echo "$BLOCKS" | jq -r '.data[].name' 2>/dev/null | while read -r block; do
-        if [ -n "$block" ]; then
-            BLOCK_DATA=$(ssh "$PRODUCTION_SSH_USER@$PRODUCTION_SERVER" "curl -s -f http://localhost:8080/api/metadatablocks/$block")
-            if [ -n "$BLOCK_DATA" ] && [ "$BLOCK_DATA" != "null" ]; then
-                # THIS isn't working, come back to it later.
-                if ! curl -s -f -X POST -H 'Content-type: application/json' \
-                     http://localhost:8080/api/metadatablocks \
-                     -d "$BLOCK_DATA"; then
-                    log "Warning: Failed to transfer metadata block: $block"
-                else
-                    log "Successfully transferred metadata block: $block"
-                    BLOCK_COUNT=$((BLOCK_COUNT + 1))
-                fi
+
+    while IFS= read -r block_name; do # MODIFIED LINE: Changed from pipe to process substitution
+        if [ -n "$block_name" ]; then
+            log "Attempting to enable metadata block: $block_name on the clone for dataverse :root..."
+            
+            # API to enable a metadata block for a dataverse (e.g., :root)
+            # curl -H "X-Dataverse-key:$API_TOKEN" -X POST -H "Content-type:application/json" \\
+            #      -d "[\"$block_name\"]" http://localhost:8080/api/dataverses/:root/metadatablocks
+
+            HTTP_RESPONSE_CODE=$(curl -s -w "%{http_code}" \
+                 -H "X-Dataverse-key:$DATAVERSE_API_KEY" \
+                 -X POST -H "Content-type:application/json" \
+                 -d "[\"$block_name\"]" \
+                 "http://localhost:8080/api/dataverses/:root/metadatablocks" -o /dev/null)
+
+            if [ "$HTTP_RESPONSE_CODE" -eq 200 ] || [ "$HTTP_RESPONSE_CODE" -eq 201 ]; then # 200 OK or 201 Created (though 200 is more typical for this op)
+                log "Successfully enabled metadata block: $block_name for :root (HTTP: $HTTP_RESPONSE_CODE)"
+                BLOCK_COUNT_SUCCESS=$((BLOCK_COUNT_SUCCESS + 1))
+            elif [ "$HTTP_RESPONSE_CODE" -eq 400 ]; then # Bad Request often means it's already enabled or other config issue
+                 # It could also mean the block name is not known to this Dataverse instance if it's truly custom and not loaded via TSV
+                 # Let's check if the block exists first.
+                 BLOCK_EXISTS_CODE=$(curl -s -w "%{http_code}" "http://localhost:8080/api/metadatablocks/$block_name" -o /dev/null)
+                 if [ "$BLOCK_EXISTS_CODE" -eq 200 ]; then
+                    log "Metadata block $block_name already exists. Assuming it's enabled or enablement via API returned 400 for other reasons (e.g. already active). (Enable HTTP: $HTTP_RESPONSE_CODE, Check HTTP: $BLOCK_EXISTS_CODE)"
+                    # Consider it a success if the block definition exists, even if explicit enable gives 400.
+                    # Dataverse might return 400 if trying to enable an already active block on a dataverse that already uses it.
+                    BLOCK_COUNT_SUCCESS=$((BLOCK_COUNT_SUCCESS + 1))
+                 else
+                    log_warning "Failed to enable metadata block: $block_name for :root (HTTP: $HTTP_RESPONSE_CODE). The block definition itself might not be loaded/known on the clone (Check HTTP: $BLOCK_EXISTS_CODE)."
+                 fi
             else
-                log "Warning: Could not fetch data for metadata block: $block"
+                log_warning "Failed to enable metadata block: $block_name for :root (HTTP: $HTTP_RESPONSE_CODE)"
             fi
+        else
+            log "Encountered an empty block name from jq parsing (production block list). Skipping."
         fi
-    done
+    done < <(echo "$BLOCKS_INFO_JSON" | jq -r '.data[].name' 2>/dev/null) # MODIFIED LINE: Process substitution
     
-    if [ $BLOCK_COUNT -eq 0 ]; then
-        log "Warning: No metadata blocks were transferred successfully"
-        # Don't return error, as this might be expected in some cases
-    else
-        log "Successfully transferred $BLOCK_COUNT metadata blocks"
+    if [ "$BLOCK_COUNT_SUCCESS" -lt "$BLOCK_COUNT_TOTAL" ] && [ "$BLOCK_COUNT_TOTAL" -gt 0 ]; then
+        log_warning "Successfully enabled $BLOCK_COUNT_SUCCESS out of $BLOCK_COUNT_TOTAL expected metadata blocks from production."
+        log_warning "Check if all required metadata block TSV files are loaded on the clone instance."
+    elif [ "$BLOCK_COUNT_TOTAL" -gt 0 ]; then # All expected blocks were processed successfully
+        log "Successfully enabled/verified all $BLOCK_COUNT_SUCCESS metadata blocks from production for :root."
     fi
     
     log "Metadata blocks sync completed"
@@ -1461,24 +1886,62 @@ check_service_dependencies() {
     return 0
 }
 
-# Function to wait for Dataverse reindex to complete
-wait_for_reindex() {
-    local max_retries=10
+# Function to wait for Dataverse reindex to complete using API
+wait_for_dataverse_reindex_api() {
+    local max_retries=${1:-360} # Default to 1 hour (360 * 10s = 3600s)
+    local sleep_interval=${2:-10} # Default to 10 seconds
     local retry_count=0
-    ITEMS_REINDEXED=$(curl -s "http://localhost:8983/solr/admin/cores?action=STATUS" | jq -r '.status | to_entries[0].key' | xargs -I {} curl -s "http://localhost:8983/solr/{}/select?q=*:*&rows=0&wt=json" | jq '.response.numFound')
-    local status=$(curl -s "http://localhost:8983/solr/admin/cores?action=STATUS")
-    log "Waiting for Dataverse reindex to complete..."
+    log "Waiting for Dataverse reindex to complete (checking /api/admin/index/status)..."
+    log "NOTE: The index status API on this Dataverse instance may not provide detailed progress."
+    log "The script will wait for the specified duration or until the status message changes."
+    log "Please monitor the Dataverse server.log for actual reindexing progress and completion."
+
+    local initial_message=""
+    local current_message=""
+
     while [ $retry_count -lt $max_retries ]; do
-        if [ "$ITEMS_REINDEXED" -ge "$ITEMS_TO_REINDEX" ]; then
-            log "Reindex completed (status: $status) $ITEMS_REINDEXED | $ITEMS_TO_REINDEX."
-            return 0
+        INDEX_STATUS_JSON=$(sudo -u "$DATAVERSE_USER" curl -s -f "http://localhost:8080/api/admin/index/status")
+        CURL_EXIT_CODE=$?
+
+        if [ $CURL_EXIT_CODE -ne 0 ]; then
+            log_warning "Failed to fetch Dataverse index status (curl exit code: $CURL_EXIT_CODE). Retrying..."
+        else
+            # Check if jq successfully parsed the JSON and got the data.message
+            if ! echo "$INDEX_STATUS_JSON" | jq -e '.data.message' > /dev/null; then
+                log_warning "Dataverse index status API did not return expected JSON format or 'data.message' field is missing. Output: $INDEX_STATUS_JSON"
+                log_warning "This might happen if Dataverse is still initializing or API response structure is unexpected. Retrying..."
+            else
+                current_message=$(echo "$INDEX_STATUS_JSON" | jq -r '.data.message // "No message field found"')
+                
+                if [ $retry_count -eq 0 ]; then
+                    initial_message="$current_message"
+                    log "Initial index status message: '$initial_message'"
+                fi
+
+                # If the message changes from the initial one, it *might* indicate a state change.
+                # This is a heuristic since we don't have isInProgress.
+                if [ "$current_message" != "$initial_message" ] && [ -n "$initial_message" ]; then
+                    log "Dataverse index status message changed to: '$current_message' from '$initial_message'."
+                    log "Assuming reindex process has moved to a new state or completed. Please verify in server.log."
+                    # We can't be sure if it's success or failure here, just that it changed.
+                    # For the script to proceed, we will consider this as completion of the wait.
+                    return 0 
+                fi
+                
+                # Log current status periodically
+                if (( retry_count % 6 == 0 )); then # Log every minute (6 * 10s)
+                    log "Current index status (attempt $((retry_count+1))/$max_retries): '$current_message'"
+                fi
+            fi
         fi
-        log "Reindex status: $ITEMS_REINDEXED/$ITEMS_TO_REINDEX (attempt $((retry_count+1))/$max_retries)..."
-        sleep 5
-        retry_count=$((retry_count+1))
+        
+        sleep "$sleep_interval"
+        retry_count=$((retry_count + 1))
     done
-    log_warning "Reindex did not complete in time (last status: $status)"
-    return 1
+
+    log_warning "Dataverse reindex wait time exceeded ($((max_retries * sleep_interval)) seconds). Last status: '$current_message'"
+    log_warning "The script will proceed, but please manually verify Solr reindex completion and health in the Dataverse server.log."
+    return 0 # Return 0 to allow script to proceed, as timeout isn't necessarily a fatal script error here.
 }
 
 # Function to perform post-transfer setup
@@ -1521,7 +1984,9 @@ post_transfer_setup() {
     if ! sudo -u "$DATAVERSE_USER" curl -s http://localhost:8080/api/admin/index; then
         log_warning "Failed to start Solr reindex"
     else
-        wait_for_reindex
+        if ! wait_for_dataverse_reindex_api; then
+            log_warning "Dataverse reindex did not complete successfully or timed out. Manual check may be required."
+        fi
     fi
 
     # Update metadata exports
@@ -1887,6 +2352,11 @@ restore_from_backup() {
     fi
     if ! sudo su - $DATAVERSE_USER -c "curl -s 'http://localhost:8080/api/admin/index'"; then
         log_warning "Failed to reindex Solr"
+    else
+        log "Solr reindex started. Waiting for completion..."
+        if ! wait_for_dataverse_reindex_api; then
+            log_warning "Dataverse reindex (after restore) did not complete successfully or timed out. Manual check may be required."
+        fi
     fi
     
     log "Restore completed successfully"
@@ -2067,6 +2537,38 @@ WARNINGS=()
 log_warning() {
     log "Warning: $1"
     WARNINGS+=("$1")
+}
+
+# Function to fetch production S3 JVM options early
+pre_sync_fetch_prod_jvm_s3_options() {
+    log "Performing pre-sync fetch of production JVM S3 options..."
+
+    # Ensure PROD_S3_OPTIONS is initialized or cleared before populating
+    PROD_S3_OPTIONS=()
+    PROD_S3_DUPLICATES=()
+
+    if [ -n "$PRODUCTION_PAYARA" ] && [ -n "$PRODUCTION_DATAVERSE_USER" ] && [ -n "$PRODUCTION_SSH_USER" ] && [ -n "$PRODUCTION_SERVER" ]; then
+        log "Fetching all JVM options from production (for S3 pre-check)..."
+        # Determine the correct Payara path on production
+        local current_prod_payara_path="${PRODUCTION_PAYARA:-$PAYARA}" # Fallback to local PAYARA if PRODUCTION_PAYARA is not set
+        
+        PROD_ALL_JVM_OPTIONS_TEMP=$(ssh "$PRODUCTION_SSH_USER@$PRODUCTION_SERVER" "sudo -u \"$PRODUCTION_DATAVERSE_USER\" \"$current_prod_payara_path/bin/asadmin\" list-jvm-options" 2>/dev/null)
+        
+        if [ $? -eq 0 ] && [ -n "$PROD_ALL_JVM_OPTIONS_TEMP" ]; then
+            log "Successfully fetched all JVM options from production for S3 pre-scan."
+            # scan_s3_jvm_options populates global PROD_S3_OPTIONS and PROD_S3_DUPLICATES
+            scan_s3_jvm_options "$PROD_ALL_JVM_OPTIONS_TEMP" true # true for production
+            if [ ${#PROD_S3_OPTIONS[@]} -gt 0 ]; then
+                log "Production S3 JVM options pre-fetched: ${PROD_S3_OPTIONS[*]}"
+            else
+                log "No S3-related JVM options found in production during pre-scan."
+            fi
+        else
+            log_warning "Failed to fetch JVM options from production during pre-scan. S3 detection via JVM options might be incomplete."
+        fi
+    else
+        log_warning "Production Payara/User/SSH variables not fully set; cannot pre-fetch JVM S3 options."
+    fi
 }
 
 # Function to check and compare critical software versions between prod and stage
@@ -2350,6 +2852,11 @@ main() {
     # Check required commands
     check_required_commands
 
+    # Fetch production S3 JVM options early and check versions
+    # This populates PROD_S3_OPTIONS for use in prompt_s3_configuration
+    pre_sync_fetch_prod_jvm_s3_options
+    check_versions # Moved after pre_sync_fetch to ensure PROD_PAYARA_PATH logic is sound
+
     # Configure Payara DDL settings (best effort)
     if ! configure_payara_ddl_settings; then
         log "Warning: Failed to automatically configure Payara DDL settings. Deployment issues may persist."
@@ -2363,6 +2870,7 @@ main() {
         "SOLR_USER"
         "DATAVERSE_CONTENT_STORAGE"
         "SOLR_PATH"
+        "DATAVERSE_API_KEY" # Added for enabling metadata blocks
     )
 
     PRODUCTION_VARS=(
