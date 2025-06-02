@@ -25,7 +25,19 @@ Create a `.env` file in the same directory as the script with the following requ
 - `SOLR_USER`: System user for Solr
 - `DATAVERSE_CONTENT_STORAGE`: Path to Dataverse files
 - `SOLR_PATH`: Path to Solr installation
+- `DATAVERSE_API_KEY`: API token for enabling metadata blocks (required for metadata block sync)
 - `FULL_COPY`: (Optional) Set to "true" for complete file transfer or "false" to limit file sizes to 2MB (maintains directory structure while avoiding large data files for testing)
+
+### S3 Configuration
+The script provides three options for handling S3 storage configuration:
+1. Configure a new S3 bucket for the clone
+2. Switch to local file storage
+3. Inherit S3 settings from production (not recommended)
+
+When configuring a new S3 bucket, you'll need to provide:
+- Bucket Name
+- Region (optional)
+- Endpoint URL (optional, for non-AWS S3-compatible storage)
 
 ### Optional Counter Processor Variables
 - `COUNTER_DAILY_SCRIPT`: Path to counter processor daily script
@@ -67,6 +79,9 @@ The script supports the following command-line options:
 - `--skip-solr`: Skip Solr configuration and index sync
 - `--skip-counter`: Skip counter processor sync
 - `--skip-backup`: Skip backup of clone server before sync
+- `--skip-metadata-blocks`: Skip metadata blocks synchronization
+- `--skip-jvm-options`: Skip JVM options synchronization
+- `--skip-post-setup`: Skip post-sync setup operations
 - `--help`: Display help message
 
 Example: 
@@ -157,19 +172,42 @@ This step handles scheduled tasks:
 3. Saves the modified crontab for manual review
 4. Does NOT automatically apply the crontab to avoid scheduling conflicts
 
-### 6. Post-Sync Operations
+### 6. Metadata Blocks Operations
+
+This step handles the synchronization of metadata blocks:
+
+1. Waits for Payara to be ready
+2. Fetches list of metadata blocks from production
+3. Enables each metadata block on the clone using the Dataverse API
+4. Verifies block enablement and handles errors gracefully
+5. Reports success/failure for each block
+
+Note: This step requires a valid `DATAVERSE_API_KEY` in the `.env` file.
+
+### 7. S3 Configuration
+
+This step manages S3 storage configuration:
+
+1. Detects S3 configuration from production (both database settings and JVM options)
+2. Provides interactive options for configuring S3 on the clone:
+   - Configure new S3 bucket
+   - Switch to local storage
+   - Inherit production settings (not recommended)
+3. Updates database settings based on user choice
+4. Manages JVM options related to S3 configuration
+5. Verifies configuration changes
+
+### 8. Post-Sync Operations
 
 This step handles final adjustments:
 
-1. Updates file permissions and ownership for:
-   - Dataverse files
-   - Solr files
-   - Counter processor files
-2. Suggests service restarts as needed
-3. **Payara Restart Prompt**: At the end of the script, you will be prompted to restart the Payara service. If you agree, the script will:
-   - Restart Payara
-   - Check and log the Payara service status
-   - Check if the Dataverse site is running by requesting `http://$DOMAIN/dataverse/root?q=` and logging the HTTP status (expects 200 for success)
+1. Updates file permissions and ownership
+2. Synchronizes JVM options from production:
+   - Preserves local S3 configuration
+   - Adds missing non-S3 options
+   - Handles duplicate options
+3. Suggests service restarts as needed
+4. Verifies Dataverse is running and accessible
 
 ### Summary & Closure
 
