@@ -13,10 +13,10 @@ echo "" > "$LOGFILE"
 
 # Global variables for S3 configuration
 S3_CONFIG_CHOICE=""
-INPUT_CLONE_S3_BUCKET_NAME="jhu-dataverse-test"
-INPUT_CLONE_S3_ACCESS_KEY=""
-INPUT_CLONE_S3_SECRET_KEY=""
-INPUT_CLONE_S3_REGION="us-east-2"
+INPUT_CLONE_S3_BUCKET_NAME="${INPUT_CLONE_S3_BUCKET_NAME:-jhu-dataverse-clone}"
+INPUT_CLONE_S3_ACCESS_KEY="${INPUT_CLONE_S3_ACCESS_KEY:-}"
+INPUT_CLONE_S3_SECRET_KEY="${INPUT_CLONE_S3_SECRET_KEY:-}"
+INPUT_CLONE_S3_REGION="${INPUT_CLONE_S3_REGION:-us-east-2}"
 
 # Global variables for S3 JVM options summary
 PROD_S3_OPTIONS=()
@@ -24,11 +24,146 @@ PROD_S3_DUPLICATES=()
 LOCAL_S3_OPTIONS=()
 LOCAL_S3_DUPLICATES=()
 
+# Global warnings array
+WARNINGS=()
+
 ITEMS_TO_REINDEX=0
 
 # Function to log and print messages
 log() {
     echo "$(date +"%Y-%m-%d %H:%M:%S") - $1" | tee -a "$LOGFILE"
+}
+
+# Function to log warnings
+log_warning() {
+    echo "$(date +"%Y-%m-%d %H:%M:%S") - WARNING: $1" | tee -a "$LOGFILE"
+}
+
+# Function to fetch production JVM S3 options early
+pre_sync_fetch_prod_jvm_s3_options() {
+    log "Fetching production JVM options for S3 configuration analysis..."
+    
+    # Check if production server variables are set
+    if [ -z "$PRODUCTION_SSH_USER" ] || [ -z "$PRODUCTION_SERVER" ] || [ -z "$PRODUCTION_DATAVERSE_USER" ]; then
+        log_warning "Production server variables not fully set. Skipping early S3 JVM options fetch."
+        return 0
+    fi
+    
+    # Get production JVM options for S3 analysis
+    if ssh -o ConnectTimeout=10 "$PRODUCTION_SSH_USER@$PRODUCTION_SERVER" "command -v /usr/local/payara6/bin/asadmin" >/dev/null 2>&1; then
+        PROD_PAYARA_PATH="/usr/local/payara6"
+    elif ssh -o ConnectTimeout=10 "$PRODUCTION_SSH_USER@$PRODUCTION_SERVER" "command -v $PAYARA/bin/asadmin" >/dev/null 2>&1; then
+        PROD_PAYARA_PATH="$PAYARA"
+    else
+        log_warning "Could not determine production Payara path. S3 configuration analysis may be limited."
+        return 0
+    fi
+    
+    local prod_jvm_options
+    prod_jvm_options=$(ssh -o ConnectTimeout=10 "$PRODUCTION_SSH_USER@$PRODUCTION_SERVER" "sudo -u $PRODUCTION_DATAVERSE_USER $PROD_PAYARA_PATH/bin/asadmin list-jvm-options 2>/dev/null")
+    
+    if [ -n "$prod_jvm_options" ]; then
+        log "Successfully fetched production JVM options for analysis."
+        scan_s3_jvm_options "$prod_jvm_options" true # true for production
+    else
+        log_warning "Could not fetch production JVM options. S3 configuration analysis will be limited."
+    fi
+}
+
+# Function to check version compatibility
+check_versions() {
+    log "Checking version compatibility between production and local..."
+    
+    # Check local Payara version
+    if [ -n "$PAYARA" ] && [ -f "$PAYARA/bin/asadmin" ]; then
+        LOCAL_PAYARA_VERSION=$(sudo -u "$DATAVERSE_USER" "$PAYARA/bin/asadmin" version 2>/dev/null | head -1 | grep -oP 'Payara Server \K[0-9]+\.[0-9]+' || echo "unknown")
+        log "Local Payara version: $LOCAL_PAYARA_VERSION"
+    else
+        log_warning "Could not determine local Payara version"
+        LOCAL_PAYARA_VERSION="unknown"
+    fi
+    
+    # Check production Payara version if possible
+    if [ -n "$PRODUCTION_SSH_USER" ] && [ -n "$PRODUCTION_SERVER" ] && [ -n "$PROD_PAYARA_PATH" ]; then
+        PROD_PAYARA_VERSION=$(ssh -o ConnectTimeout=10 "$PRODUCTION_SSH_USER@$PRODUCTION_SERVER" "sudo -u $PRODUCTION_DATAVERSE_USER $PROD_PAYARA_PATH/bin/asadmin version 2>/dev/null | head -1 | grep -oP 'Payara Server \K[0-9]+\.[0-9]+'" 2>/dev/null || echo "unknown")
+        log "Production Payara version: $PROD_PAYARA_VERSION"
+    else
+        log_warning "Could not determine production Payara version"
+        PROD_PAYARA_VERSION="unknown"
+    fi
+    
+    # Check for version compatibility
+    if [ "$LOCAL_PAYARA_VERSION" != "unknown" ] && [ "$PROD_PAYARA_VERSION" != "unknown" ]; then
+        if [ "$LOCAL_PAYARA_VERSION" != "$PROD_PAYARA_VERSION" ]; then
+            log_warning "Payara version mismatch detected!"
+            log_warning "Production: $PROD_PAYARA_VERSION, Local: $LOCAL_PAYARA_VERSION"
+            log_warning "This may cause compatibility issues with JVM options and configurations."
+        else
+            log "Payara versions match: $LOCAL_PAYARA_VERSION"
+        fi
+    fi
+}
+
+# Function to wait for Dataverse reindex to complete
+wait_for_dataverse_reindex_api() {
+    local items_to_reindex="$1"
+    local max_wait=1800  # 30 minutes
+    local interval=30
+    local elapsed=0
+    
+    log "Waiting for Dataverse reindex to complete ($items_to_reindex items)..."
+    
+    while [ $elapsed -lt $max_wait ]; do
+        # Check if reindex is still running
+        local index_status
+        index_status=$(curl -s "http://localhost:8080/api/admin/index/status" 2>/dev/null)
+        
+        if [ -n "$index_status" ]; then
+            # Check if indexing is still in progress
+            if echo "$index_status" | grep -q '"isIndexing":false'; then
+                log "Dataverse reindex completed successfully."
+                return 0
+            fi
+        fi
+        
+        log "Reindex still in progress... (elapsed: ${elapsed}s/${max_wait}s)"
+        sleep $interval
+        elapsed=$((elapsed + interval))
+    done
+    
+    log_warning "Timed out waiting for reindex to complete after ${max_wait} seconds."
+    return 1
+}
+
+# Function to print help message
+print_help() {
+    echo "Usage: $0 [options]"
+    echo ""
+    echo "Dataverse Production Backup & Fetch Script"
+    echo "Automates syncing a Dataverse instance from production to a staging/clone server"
+    echo ""
+    echo "Options:"
+    echo "  --dry-run               Show what would be done without making changes"
+    echo "  --verbose               Show detailed output"
+    echo "  --debug                 Show debug output"
+    echo "  --skip-db               Skip database sync"
+    echo "  --skip-files            Skip files sync"
+    echo "  --skip-solr             Skip Solr sync"
+    echo "  --skip-counter          Skip counter processor sync"
+    echo "  --skip-backup           Skip backup of clone server before sync"
+    echo "  --skip-external-tools   Skip external tools sync"
+    echo "  --skip-jvm-options      Skip JVM options sync"
+    echo "  --skip-post-setup       Skip post-transfer setup"
+    echo "  --skip-template-check   Skip template integrity check"
+    echo "  --cleanup-backups       Clean up old backups before starting"
+    echo "  --restore               Restore from backup"
+    echo "  --restore-path=PATH     Specify backup path for restore"
+    echo "  --full-copy             Perform full file sync (no size limit)"
+    echo "  --configure-ddl         Configure Payara DDL settings"
+    echo "  --compare-configs       Compare domain.xml between production and local"
+    echo "  -h, --help              Show this help message"
+    echo ""
+    echo "Environment variables must be set in .env file in script directory."
 }
 
 # Function to print final summary
@@ -53,9 +188,8 @@ print_final_summary() {
     log "Counter Processor: ${STATUS_COUNTER:+$icon_success} ${STATUS_COUNTER:-$icon_skipped} ${STATUS_COUNTER:-SKIPPED}"
     log "External Tools: ${STATUS_EXTERNAL_TOOLS:+$icon_success} ${STATUS_EXTERNAL_TOOLS:-$icon_skipped} ${STATUS_EXTERNAL_TOOLS:-SKIPPED}"
     log "JVM Options: ${STATUS_JVM_OPTIONS:+$icon_success} ${STATUS_JVM_OPTIONS:-$icon_skipped} ${STATUS_JVM_OPTIONS:-SKIPPED}"
-    log "Metadata Blocks: ${STATUS_METADATA_BLOCKS:+$icon_success} ${STATUS_METADATA_BLOCKS:-$icon_skipped} ${STATUS_METADATA_BLOCKS:-SKIPPED}"
-    log "Service Dependencies: ${STATUS_DEPENDENCIES:+$icon_success} ${STATUS_DEPENDENCIES:-$icon_skipped} ${STATUS_DEPENDENCIES:-SKIPPED}"
     log "Post-Setup: ${STATUS_POST_SETUP:+$icon_success} ${STATUS_POST_SETUP:-$icon_skipped} ${STATUS_POST_SETUP:-SKIPPED}"
+    log "Template Check: ${STATUS_TEMPLATE_CHECK:+$icon_success} ${STATUS_TEMPLATE_CHECK:-$icon_skipped} ${STATUS_TEMPLATE_CHECK:-SKIPPED}"
     
     # Print overall status
     if [ "$SCRIPT_OVERALL_STATUS" = "SUCCESS" ]; then
@@ -86,7 +220,7 @@ print_final_summary() {
             done
         fi
     else
-        log "No S3-related JVM options found in production configuration"
+        log "No S3-related JVM options found in production configuration. This might be a false positive."
     fi
     
     # Local S3 Options
@@ -107,7 +241,7 @@ print_final_summary() {
             done
         fi
     else
-        log "No S3-related JVM options found in local configuration"
+        log "No S3-related JVM options found in local configuration. This might be a false positive."
     fi
 
     # Print warnings if any
@@ -187,25 +321,6 @@ check_required_commands() {
     if [ -f /.dockerenv ] || grep -q docker /proc/1/cgroup 2>/dev/null; then
         log "Detected Docker container environment."
         IS_DOCKER=true
-        
-        # Check if docker command is available
-        if command -v docker >/dev/null 2>&1; then
-            log "Docker command is available."
-        else
-            log "Warning: Running in a container, but docker command is not available."
-        fi
-        
-        # Check for docker compose
-        if command -v "docker compose" >/dev/null 2>&1; then
-            log "Docker Compose (v2) is available."
-            DOCKER_COMPOSE_CMD="docker compose"
-        elif command -v docker-compose >/dev/null 2>&1; then
-            log "Docker Compose (v1, deprecated) is available. Consider upgrading to Docker Compose v2."
-            DOCKER_COMPOSE_CMD="docker-compose"
-        else
-            log "Warning: Docker Compose not found. Some operations might be limited."
-            DOCKER_COMPOSE_CMD=""
-        fi
     else
         IS_DOCKER=false
     fi
@@ -213,6 +328,8 @@ check_required_commands() {
 
 # Function to check SSL certificate validity
 check_ssl_certificates() {
+    echo ""
+    log "=== SSL CERTIFICATE VALIDITY ==="
     local domain="$1"
     local cert_file
     cert_file=$(mktemp)
@@ -224,7 +341,8 @@ check_ssl_certificates() {
     fi
     
     local expiry_date
-    expiry_date=$(openssl x509 -enddate -noout -in "$cert_file" | cut -d= -f2)
+    expiry_date=$(grep "Not After" "$cert_file" | cut -d: -f2- | xargs)
+    log "SSL certificate expiry date: $expiry_date"
     local expiry_epoch
     expiry_epoch=$(date -d "$expiry_date" +%s)
     local current_epoch
@@ -991,7 +1109,7 @@ sync_database() {
         log "Successfully created database '$DB_NAME' owned by '$DB_USER'. Output: $createdb_output"
     fi
 
-    log "Restoring database to local server '$DB_NAME' using pg_restore (no owner, no ACLs)..."
+    log "Restoring database to local server '$DB_NAME' using pg_restore (no owner, no ACLs) from Production dump file with $number_of_items_to_reindex items to reindex"
     # Set PGPASSWORD for pg_restore
     export PGPASSWORD="$DB_PASSWORD"
     
@@ -1053,7 +1171,6 @@ sync_database() {
     #         log "DEBUG: Running psql command: sudo -u $DB_SYSTEM_USER psql -d $DB_NAME -c \"$REASSIGN_SQL\""
     #         # Capture output even on success in debug mode
     #         if ! psql_reassign_output=$(sudo -u "$DB_SYSTEM_USER" psql -d "$DB_NAME" -c "$REASSIGN_SQL" 2>&1); then
-    #              log "ERROR: Failed to reassign ownership to $DB_USER in $DB_NAME"
     // ... existing code ...
 
     # Run post-restore SQL to update settings for non-production instance
@@ -1099,8 +1216,8 @@ sync_database() {
         log "Configuring clone to use a new S3 bucket: $INPUT_CLONE_S3_BUCKET_NAME"
         S3_SETTINGS_SQL="
             UPDATE setting SET content = '$INPUT_CLONE_S3_BUCKET_NAME' WHERE name = ':S3BucketName';
-            # UPDATE setting SET content = '$INPUT_CLONE_S3_ACCESS_KEY' WHERE name = ':S3AccessKey';
-            # UPDATE setting SET content = '$INPUT_CLONE_S3_SECRET_KEY' WHERE name = ':S3SecretKey';
+            -- UPDATE setting SET content = '$INPUT_CLONE_S3_ACCESS_KEY' WHERE name = ':S3AccessKey';
+            -- UPDATE setting SET content = '$INPUT_CLONE_S3_SECRET_KEY' WHERE name = ':S3SecretKey';
         "
         if [ -n "$INPUT_CLONE_S3_REGION" ]; then
             S3_SETTINGS_SQL="$S3_SETTINGS_SQL UPDATE setting SET content = '$INPUT_CLONE_S3_REGION' WHERE name = ':S3Region';"
@@ -1115,14 +1232,21 @@ sync_database() {
         S3_SETTINGS_SQL="$S3_SETTINGS_SQL UPDATE setting SET content = 's3' WHERE name = ':DefaultStorageDriverId';"
         # Ensure S3 related settings are present or add them
         S3_SETTINGS_SQL="$S3_SETTINGS_SQL
-            INSERT INTO setting (name, content) SELECT ':S3BucketName', '$INPUT_CLONE_S3_BUCKET_NAME' WHERE NOT EXISTS (SELECT 1 FROM setting WHERE name = ':S3BucketName') ON CONFLICT (name) DO UPDATE SET content = '$INPUT_CLONE_S3_BUCKET_NAME';
-            INSERT INTO setting (name, content) SELECT ':DefaultStorageDriverId', 's3' WHERE NOT EXISTS (SELECT 1 FROM setting WHERE name = ':DefaultStorageDriverId') ON CONFLICT (name) DO UPDATE SET content = 's3';
+            UPDATE setting SET content = '$INPUT_CLONE_S3_BUCKET_NAME' WHERE name = ':S3BucketName';
+            INSERT INTO setting (name, content) SELECT ':S3BucketName', '$INPUT_CLONE_S3_BUCKET_NAME' WHERE NOT EXISTS (SELECT 1 FROM setting WHERE name = ':S3BucketName');
+
+            UPDATE setting SET content = 's3' WHERE name = ':DefaultStorageDriverId';
+            INSERT INTO setting (name, content) SELECT ':DefaultStorageDriverId', 's3' WHERE NOT EXISTS (SELECT 1 FROM setting WHERE name = ':DefaultStorageDriverId');
         "
         if [ -n "$INPUT_CLONE_S3_REGION" ]; then
-             S3_SETTINGS_SQL="$S3_SETTINGS_SQL INSERT INTO setting (name, content) SELECT ':S3Region', '$INPUT_CLONE_S3_REGION' WHERE NOT EXISTS (SELECT 1 FROM setting WHERE name = ':S3Region') ON CONFLICT (name) DO UPDATE SET content = '$INPUT_CLONE_S3_REGION';"
+             S3_SETTINGS_SQL="$S3_SETTINGS_SQL
+                UPDATE setting SET content = '$INPUT_CLONE_S3_REGION' WHERE name = ':S3Region';
+                INSERT INTO setting (name, content) SELECT ':S3Region', '$INPUT_CLONE_S3_REGION' WHERE NOT EXISTS (SELECT 1 FROM setting WHERE name = ':S3Region');"
         fi
         if [ -n "$INPUT_CLONE_S3_ENDPOINT_URL" ]; then
-            S3_SETTINGS_SQL="$S3_SETTINGS_SQL INSERT INTO setting (name, content) SELECT ':S3EndpointUrl', '$INPUT_CLONE_S3_ENDPOINT_URL' WHERE NOT EXISTS (SELECT 1 FROM setting WHERE name = ':S3EndpointUrl') ON CONFLICT (name) DO UPDATE SET content = '$INPUT_CLONE_S3_ENDPOINT_URL';"
+            S3_SETTINGS_SQL="$S3_SETTINGS_SQL
+                UPDATE setting SET content = '$INPUT_CLONE_S3_ENDPOINT_URL' WHERE name = ':S3EndpointUrl';
+                INSERT INTO setting (name, content) SELECT ':S3EndpointUrl', '$INPUT_CLONE_S3_ENDPOINT_URL' WHERE NOT EXISTS (SELECT 1 FROM setting WHERE name = ':S3EndpointUrl');"
         fi
 
         execute_sql_on_clone "$S3_SETTINGS_SQL"
@@ -1130,7 +1254,6 @@ sync_database() {
     elif [ "$S3_CONFIG_CHOICE" == "2" ]; then # Local File Storage
         log "Configuring clone to use local file storage in '$DATAVERSE_CONTENT_STORAGE'."
         LOCAL_STORAGE_SQL="
-            UPDATE setting SET content = 'file' WHERE name = ':DefaultStorageDriverId';
             DELETE FROM setting WHERE name = ':S3BucketName';
             DELETE FROM setting WHERE name = ':S3AccessKey';
             DELETE FROM setting WHERE name = ':S3SecretKey';
@@ -1140,15 +1263,15 @@ sync_database() {
             DELETE FROM setting WHERE name LIKE '%S3DataverseStorageDriver%'; -- Attempt to catch namespaced S3 settings
 
             -- Ensure local filesystem directory setting exists and points to DATAVERSE_CONTENT_STORAGE
+            UPDATE setting SET content = '$DATAVERSE_CONTENT_STORAGE' WHERE name = ':FileSystemStorageDirectory';
             INSERT INTO setting (name, content)
                 SELECT ':FileSystemStorageDirectory', '$DATAVERSE_CONTENT_STORAGE'
-                WHERE NOT EXISTS (SELECT 1 FROM setting WHERE name = ':FileSystemStorageDirectory')
-            ON CONFLICT (name) DO UPDATE SET content = '$DATAVERSE_CONTENT_STORAGE';
+                WHERE NOT EXISTS (SELECT 1 FROM setting WHERE name = ':FileSystemStorageDirectory');
             
             -- Ensure DefaultStorageDriverId is 'file'
+            UPDATE setting SET content = 'file' WHERE name = ':DefaultStorageDriverId';
              INSERT INTO setting (name, content) SELECT ':DefaultStorageDriverId', 'file'
-                WHERE NOT EXISTS (SELECT 1 FROM setting WHERE name = ':DefaultStorageDriverId')
-            ON CONFLICT (name) DO UPDATE SET content = 'file';
+                WHERE NOT EXISTS (SELECT 1 FROM setting WHERE name = ':DefaultStorageDriverId');
         "
         execute_sql_on_clone "$LOCAL_STORAGE_SQL"
 
@@ -1336,6 +1459,46 @@ sync_counter_processor() {
     rm -rf "$TEMP_DIR"
     
     log "Counter processor sync completed"
+    return 0
+}
+
+# Function to restart Payara and wait for it to be ready
+restart_and_wait_for_payara() {
+    log "Restarting Payara and waiting for Dataverse to deploy..."
+    if ! sudo systemctl restart payara; then
+        log "ERROR: Failed to restart Payara."
+        return 1
+    fi
+    
+    # Wait for the application to be ready
+    local max_wait=300 # 5 minutes
+    local interval=10
+    local elapsed=0
+    
+    while [ $elapsed -lt $max_wait ]; do
+        if curl -s -k http://localhost:8080/api/v1/info/server | grep -q '"status":"OK"'; then
+            log "Payara is up and Dataverse is responding."
+            return 0
+        fi
+        log "Waiting for Payara/Dataverse to become available... ($((elapsed/interval))/$(($max_wait/interval)))"
+        sleep $interval
+        elapsed=$((elapsed + interval))
+    done
+    
+    log "ERROR: Timed out waiting for Payara/Dataverse to start."
+    return 1
+}
+
+# Function to start Payara service
+start_payara() {
+    log "Starting Payara service..."
+    if ! sudo systemctl start payara; then
+        log "ERROR: Failed to start Payara service."
+        return 1
+    fi
+
+    log "Waiting for Payara to initialize..."
+    sleep 20 # Give it a moment to start up before proceeding
     return 0
 }
 
@@ -1580,7 +1743,7 @@ verify_jvm_options() {
     elif [ "$S3_CONFIG_CHOICE" == "1" ] || [ "$S3_CONFIG_CHOICE" == "3" ]; then
          if [ ${#LOCAL_S3_OPTIONS[@]} -gt 0 ]; then
             log "Clone is configured to use S3 (or inherit). Existing local S3 JVM options will be preserved."
-            log "Production S3-specific options (e.g. bucket names, keys defined in JVM) will NOT be synced from production."
+            log "Production S3-specific options (e.g. bucket names, keys defined in JVM) will be SKIPPED."
         else
             log "Clone is configured to use S3 (or inherit), and no specific S3 JVM options were found locally. Ensure S3 is configured correctly via database settings."
         fi
@@ -1694,254 +1857,91 @@ verify_jvm_options() {
     fi
 
     log "JVM options sync completed."
-    return 0
+    STATUS_JVM_OPTIONS="SUCCESS"
 }
 
-# Function to sync metadata blocks
-sync_metadata_blocks() {
-    echo ""
-    log "=== METADATA BLOCKS ==="
-    
-    if [ "$DRY_RUN" = true ]; then
-        log "DRY RUN: Would sync metadata blocks from production"
-        return 0
+# Function to explicitly configure JVM options for local file storage
+configure_local_storage_jvm_options() {
+    log "Configuring essential JVM options for local file storage (delete-then-create)..."
+    local file_dir_option="-Ddataverse.files.file.directory=${DATAVERSE_CONTENT_STORAGE}"
+    local file_type_option="-Ddataverse.files.file.type=file"
+    local file_label_option="-Ddataverse.files.file.label=file"
+    local legacy_dir_option="-Ddataverse.files.directory=${DATAVERSE_CONTENT_STORAGE}"
+    local upload_redirect_option="-Ddataverse.files.file.upload-redirect=false"
+    local download_redirect_option="-Ddataverse.files.file.download-redirect=false"
+    local asadmin_cmd="sudo -u $DATAVERSE_USER $PAYARA/bin/asadmin"
+
+    # --- DELETE AND RE-CREATE to ensure correctness ---
+    log "Deleting potentially stale local storage JVM options..."
+    # This is safe; delete-jvm-options does not error if the option doesn't exist.
+    $asadmin_cmd delete-jvm-options "${file_dir_option}"
+    $asadmin_cmd delete-jvm-options "${file_type_option}"
+    $asadmin_cmd delete-jvm-options "${file_label_option}"
+    $asadmin_cmd delete-jvm-options "${legacy_dir_option}"
+    $asadmin_cmd delete-jvm-options "${upload_redirect_option}"
+    $asadmin_cmd delete-jvm-options "${download_redirect_option}"
+
+    log "Creating definitive local storage JVM options..."
+    if ! $asadmin_cmd create-jvm-options "${file_dir_option}"; then
+        log "ERROR: Failed to set dataverse.files.file.directory JVM option."
     fi
-    
-    # Wait for Payara to be ready
-    log "Waiting for Payara to be ready (checking asadmin version)..."
-    MAX_RETRIES=150  # Increased timeout to 5 minutes
-    RETRY_COUNT=0
-    while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
-        if sudo -u "$DATAVERSE_USER" "$PAYARA/bin/asadmin" version > /dev/null 2>&1; then
-            log "Payara is ready (asadmin version check successful)"
-            log "Adding a short delay for Dataverse application to initialize..."
-            sleep 30 # Wait 30 seconds for Dataverse to fully initialize
-            break
-        fi
-        RETRY_COUNT=$((RETRY_COUNT + 1))
-        log "Payara not ready yet (attempt $RETRY_COUNT/$MAX_RETRIES), waiting 2s..."
-        sleep 2
-    done
-    
-    if [ $RETRY_COUNT -eq $MAX_RETRIES ]; then
-        log "Warning: Payara did not become ready in time. Some operations may fail."
-        # Don't return here, try to proceed anyway
+    if ! $asadmin_cmd create-jvm-options "${file_type_option}"; then
+        log "ERROR: Failed to set dataverse.files.file.type JVM option."
     fi
-    
-    # Get list of metadata blocks from production
-    log "Fetching metadata block names from production..."
-    BLOCKS_INFO_JSON=$(ssh "$PRODUCTION_SSH_USER@$PRODUCTION_SERVER" "curl -s -f http://localhost:8080/api/metadatablocks")
-    
-    if [ $? -ne 0 ] || [ -z "$BLOCKS_INFO_JSON" ] || [ "$BLOCKS_INFO_JSON" = "null" ]; then
-        log_warning "Failed to fetch metadata block names from production, or no blocks found."
-        log "Metadata blocks sync completed (no blocks to process/enable)."
-        return 0 # Not a fatal error, but a warning.
+    if ! $asadmin_cmd create-jvm-options "${file_label_option}"; then
+        log "ERROR: Failed to set dataverse.files.file.label JVM option."
+    fi
+    if ! $asadmin_cmd create-jvm-options "${legacy_dir_option}"; then
+        log "ERROR: Failed to set dataverse.files.directory (legacy) JVM option."
+    fi
+    if ! $asadmin_cmd create-jvm-options "${upload_redirect_option}"; then
+        log "ERROR: Failed to set dataverse.files.file.upload-redirect JVM option."
+    fi
+    if ! $asadmin_cmd create-jvm-options "${download_redirect_option}"; then
+        log "ERROR: Failed to set dataverse.files.file.download-redirect JVM option."
     fi
 
-    # Check if DATAVERSE_API_KEY is set, as it's needed for enabling blocks
-    if [ -z "$DATAVERSE_API_KEY" ]; then
-        log_warning "DATAVERSE_API_KEY is not set in the .env file. Cannot enable metadata blocks on the clone."
-        log_warning "Please add DATAVERSE_API_KEY (an admin/superuser API token for the clone) to your .env file."
-        log "Metadata blocks sync completed (cannot enable blocks without API key)."
-        return 1 # Return an error as we cannot perform the intended operation.
-    fi
+    # Check if database contains S3 storage identifiers, and if so, configure S3 driver for compatibility
+    log "Checking if S3 storage driver is needed for existing data..."
+    local s3_count
+    s3_count=$(sudo -u postgres psql -t dvndb -c "SELECT COUNT(*) FROM dvobject WHERE storageidentifier LIKE 's3://%';" 2>/dev/null | xargs || echo "0")
     
-    log "Attempting to enable metadata blocks on the clone..."
-    BLOCK_COUNT_SUCCESS=0
-    BLOCK_COUNT_TOTAL=$(echo "$BLOCKS_INFO_JSON" | jq -r '.data | length // 0' 2>/dev/null)
-
-    if [ "$BLOCK_COUNT_TOTAL" -eq 0 ]; then
-        log "No metadata blocks reported by production. Nothing to enable."
-        log "Metadata blocks sync completed."
-        return 0
-    fi
-
-    while IFS= read -r block_name; do # MODIFIED LINE: Changed from pipe to process substitution
-        if [ -n "$block_name" ]; then
-            log "Attempting to enable metadata block: $block_name on the clone for dataverse :root..."
-            
-            # API to enable a metadata block for a dataverse (e.g., :root)
-            # curl -H "X-Dataverse-key:$API_TOKEN" -X POST -H "Content-type:application/json" \\
-            #      -d "[\"$block_name\"]" http://localhost:8080/api/dataverses/:root/metadatablocks
-
-            HTTP_RESPONSE_CODE=$(curl -s -w "%{http_code}" \
-                 -H "X-Dataverse-key:$DATAVERSE_API_KEY" \
-                 -X POST -H "Content-type:application/json" \
-                 -d "[\"$block_name\"]" \
-                 "http://localhost:8080/api/dataverses/:root/metadatablocks" -o /dev/null)
-
-            if [ "$HTTP_RESPONSE_CODE" -eq 200 ] || [ "$HTTP_RESPONSE_CODE" -eq 201 ]; then # 200 OK or 201 Created (though 200 is more typical for this op)
-                log "Successfully enabled metadata block: $block_name for :root (HTTP: $HTTP_RESPONSE_CODE)"
-                BLOCK_COUNT_SUCCESS=$((BLOCK_COUNT_SUCCESS + 1))
-            elif [ "$HTTP_RESPONSE_CODE" -eq 400 ]; then # Bad Request often means it's already enabled or other config issue
-                 # It could also mean the block name is not known to this Dataverse instance if it's truly custom and not loaded via TSV
-                 # Let's check if the block exists first.
-                 BLOCK_EXISTS_CODE=$(curl -s -w "%{http_code}" "http://localhost:8080/api/metadatablocks/$block_name" -o /dev/null)
-                 if [ "$BLOCK_EXISTS_CODE" -eq 200 ]; then
-                    log "Metadata block $block_name already exists. Assuming it's enabled or enablement via API returned 400 for other reasons (e.g. already active). (Enable HTTP: $HTTP_RESPONSE_CODE, Check HTTP: $BLOCK_EXISTS_CODE)"
-                    # Consider it a success if the block definition exists, even if explicit enable gives 400.
-                    # Dataverse might return 400 if trying to enable an already active block on a dataverse that already uses it.
-                    BLOCK_COUNT_SUCCESS=$((BLOCK_COUNT_SUCCESS + 1))
-                 else
-                    log_warning "Failed to enable metadata block: $block_name for :root (HTTP: $HTTP_RESPONSE_CODE). The block definition itself might not be loaded/known on the clone (Check HTTP: $BLOCK_EXISTS_CODE)."
-                 fi
-            else
-                log_warning "Failed to enable metadata block: $block_name for :root (HTTP: $HTTP_RESPONSE_CODE)"
-            fi
-        else
-            log "Encountered an empty block name from jq parsing (production block list). Skipping."
-        fi
-    done < <(echo "$BLOCKS_INFO_JSON" | jq -r '.data[].name' 2>/dev/null) # MODIFIED LINE: Process substitution
-    
-    if [ "$BLOCK_COUNT_SUCCESS" -lt "$BLOCK_COUNT_TOTAL" ] && [ "$BLOCK_COUNT_TOTAL" -gt 0 ]; then
-        log_warning "Successfully enabled $BLOCK_COUNT_SUCCESS out of $BLOCK_COUNT_TOTAL expected metadata blocks from production."
-        log_warning "Check if all required metadata block TSV files are loaded on the clone instance."
-    elif [ "$BLOCK_COUNT_TOTAL" -gt 0 ]; then # All expected blocks were processed successfully
-        log "Successfully enabled/verified all $BLOCK_COUNT_SUCCESS metadata blocks from production for :root."
-    fi
-    
-    log "Metadata blocks sync completed"
-    return 0
-}
-
-# Function to check service dependencies
-check_service_dependencies() {
-    echo ""
-    log "=== SERVICE DEPENDENCIES ==="
-    
-    if [ "$DRY_RUN" = true ]; then
-        log "DRY RUN: Would check and install service dependencies"
-        return 0
-    fi
-    
-    # Check ImageMagick
-    if ! command -v convert >/dev/null 2>&1; then
-        log "Installing ImageMagick..."
-        if ! sudo yum install -y ImageMagick; then
-            log "Warning: Failed to install ImageMagick"
-        fi
-    fi
-    
-    # Check Java version
-    JAVA_VERSION=$(java -version 2>&1 | grep -oP '(?<=version ")([0-9]+)')
-    if [ "$JAVA_VERSION" -lt 17 ]; then
-        log "ERROR: Java 17 or higher is required"
-        return 1
-    fi
-    
-    # Check required packages
-    local required_packages=(
-        "curl" "wget" "rsync" "postgresql" "postgresql-server"
-        "java-17-openjdk" "ImageMagick"
-    )
-    
-    for pkg in "${required_packages[@]}"; do
-        if ! rpm -q "$pkg" >/dev/null 2>&1; then
-            log "Installing $pkg..."
-            if ! sudo yum install -y "$pkg"; then
-                log "Warning: Failed to install $pkg"
-            fi
-        fi
-    done
-    
-    # Check Solr installation and service
-    log "Checking Solr installation and service..."
-    
-    # Check if Solr service exists
-    if ! systemctl list-unit-files | grep -q "solr.service"; then
-        log "Solr service not found in systemd"
+    if [ "$s3_count" -gt 0 ]; then
+        log "Found $s3_count objects with S3 storage identifiers. Configuring S3 storage driver for compatibility..."
+        local s3_type_option="-Ddataverse.files.s3.type=s3"
+        local s3_label_option="-Ddataverse.files.s3.label=s3"
+        local s3_bucket_option="-Ddataverse.files.s3.bucket-name=jhu-dataverse-prod-01"
+        local s3_download_option="-Ddataverse.files.s3.download-redirect=true"
+        local s3_upload_option="-Ddataverse.files.s3.upload-redirect=true"
         
-        # Check if we have a Solr installation script
-        if [ -f "${SCRIPT_DIR}/../install/solr.sh" ]; then
-            log "Found Solr installation script. Running it..."
-            if ! sudo bash "${SCRIPT_DIR}/../install/solr.sh"; then
-                log "Warning: Failed to install Solr using installation script"
-            fi
-        else
-            log "Warning: Solr installation script not found at ${SCRIPT_DIR}/../install/solr.sh"
-            log "Please ensure Solr is installed manually or provide the installation script"
+        # Delete and recreate S3 options
+        $asadmin_cmd delete-jvm-options "${s3_type_option}"
+        $asadmin_cmd delete-jvm-options "${s3_label_option}"
+        $asadmin_cmd delete-jvm-options "${s3_bucket_option}"
+        $asadmin_cmd delete-jvm-options "${s3_download_option}"
+        $asadmin_cmd delete-jvm-options "${s3_upload_option}"
+        
+        if ! $asadmin_cmd create-jvm-options "${s3_type_option}"; then
+            log "ERROR: Failed to set S3 type JVM option."
         fi
+        if ! $asadmin_cmd create-jvm-options "${s3_label_option}"; then
+            log "ERROR: Failed to set S3 label JVM option."
+        fi
+        if ! $asadmin_cmd create-jvm-options "${s3_bucket_option}"; then
+            log "ERROR: Failed to set S3 bucket JVM option."
+        fi
+        if ! $asadmin_cmd create-jvm-options "${s3_download_option}"; then
+            log "ERROR: Failed to set S3 download redirect JVM option."
+        fi
+        if ! $asadmin_cmd create-jvm-options "${s3_upload_option}"; then
+            log "ERROR: Failed to set S3 upload redirect JVM option."
+        fi
+        log "S3 storage driver configured for compatibility with existing data."
     else
-        log "Solr service found in systemd"
-        
-        # Check if Solr is installed in the expected location
-        if [ ! -d "$SOLR_PATH" ]; then
-            log "Warning: Solr installation directory not found at $SOLR_PATH"
-        else
-            log "Found Solr installation at $SOLR_PATH"
-        fi
-        
-        # Check if Solr service is running
-        if ! systemctl is-active --quiet solr; then
-            log "Warning: Solr service is not running"
-            if ! sudo systemctl start solr; then
-                log "Warning: Failed to start Solr service"
-            fi
-        else
-            log "Solr service is running"
-        fi
+        log "No S3 storage identifiers found. S3 storage driver not needed."
     fi
-    
-    log "Service dependencies check completed"
-    return 0
-}
 
-# Function to wait for Dataverse reindex to complete using API
-wait_for_dataverse_reindex_api() {
-    local max_retries=${1:-360} # Default to 1 hour (360 * 10s = 3600s)
-    local sleep_interval=${2:-10} # Default to 10 seconds
-    local retry_count=0
-    log "Waiting for Dataverse reindex to complete (checking /api/admin/index/status)..."
-    log "NOTE: The index status API on this Dataverse instance may not provide detailed progress."
-    log "The script will wait for the specified duration or until the status message changes."
-    log "Please monitor the Dataverse server.log for actual reindexing progress and completion."
-
-    local initial_message=""
-    local current_message=""
-
-    while [ $retry_count -lt $max_retries ]; do
-        INDEX_STATUS_JSON=$(sudo -u "$DATAVERSE_USER" curl -s -f "http://localhost:8080/api/admin/index/status")
-        CURL_EXIT_CODE=$?
-
-        if [ $CURL_EXIT_CODE -ne 0 ]; then
-            log_warning "Failed to fetch Dataverse index status (curl exit code: $CURL_EXIT_CODE). Retrying..."
-        else
-            # Check if jq successfully parsed the JSON and got the data.message
-            if ! echo "$INDEX_STATUS_JSON" | jq -e '.data.message' > /dev/null; then
-                log_warning "Dataverse index status API did not return expected JSON format or 'data.message' field is missing. Output: $INDEX_STATUS_JSON"
-                log_warning "This might happen if Dataverse is still initializing or API response structure is unexpected. Retrying..."
-            else
-                current_message=$(echo "$INDEX_STATUS_JSON" | jq -r '.data.message // "No message field found"')
-                
-                if [ $retry_count -eq 0 ]; then
-                    initial_message="$current_message"
-                    log "Initial index status message: '$initial_message'"
-                fi
-
-                # If the message changes from the initial one, it *might* indicate a state change.
-                # This is a heuristic since we don't have isInProgress.
-                if [ "$current_message" != "$initial_message" ] && [ -n "$initial_message" ]; then
-                    log "Dataverse index status message changed to: '$current_message' from '$initial_message'."
-                    log "Assuming reindex process has moved to a new state or completed. Please verify in server.log."
-                    # We can't be sure if it's success or failure here, just that it changed.
-                    # For the script to proceed, we will consider this as completion of the wait.
-                    return 0 
-                fi
-                
-                # Log current status periodically
-                if (( retry_count % 6 == 0 )); then # Log every minute (6 * 10s)
-                    log "Current index status (attempt $((retry_count+1))/$max_retries): '$current_message'"
-                fi
-            fi
-        fi
-        
-        sleep "$sleep_interval"
-        retry_count=$((retry_count + 1))
-    done
-
-    log_warning "Dataverse reindex wait time exceeded ($((max_retries * sleep_interval)) seconds). Last status: '$current_message'"
-    log_warning "The script will proceed, but please manually verify Solr reindex completion and health in the Dataverse server.log."
-    return 0 # Return 0 to allow script to proceed, as timeout isn't necessarily a fatal script error here.
+    log "Local file storage JVM options have been decisively configured. A Payara restart is required for these to take effect."
 }
 
 # Function to perform post-transfer setup
@@ -1950,82 +1950,81 @@ post_transfer_setup() {
     log "=== POST-TRANSFER SETUP ==="
     
     if [ "$DRY_RUN" = true ]; then
-        log "DRY RUN: Would perform post-transfer setup"
+        log "DRY RUN: Would perform post-transfer setup."
+        STATUS_POST_SETUP="DRY_RUN"
         return 0
     fi
     
-    # Wait for Payara to be ready
-    log "Waiting for Payara to be ready (checking asadmin version)..."
-    MAX_RETRIES=150 # Increased timeout to 5 minutes
-    RETRY_COUNT=0
-    while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
-        if sudo -u "$DATAVERSE_USER" "$PAYARA/bin/asadmin" version > /dev/null 2>&1; then
-            log "Payara is ready (asadmin version check successful)"
-            log "Adding a short delay for Dataverse application to initialize..."
-            sleep 30 # Wait 30 seconds for Dataverse to fully initialize
+    # --- 1. Final Cache Clear and Restart ---
+    log "Performing final cache clear and restart..."
+    if ! sudo systemctl stop payara; then
+        log "Warning: Failed to stop Payara for cache clearing. Attempting to proceed."
+    else
+        log "Clearing Payara application cache..."
+        sudo rm -rf "$PAYARA/glassfish/domains/domain1/generated/*"
+        sudo rm -rf "$PAYARA/glassfish/domains/domain1/osgi-cache/*"
+    fi
+
+    log "Starting Payara after cache clear..."
+    if ! sudo systemctl start payara; then
+        log "ERROR: Failed to start Payara after clearing cache. Cannot proceed with re-indexing."
+        STATUS_POST_SETUP="FAILURE"
+        return 1
+    fi
+    
+    # --- 2. Wait for Dataverse API to be ready ---
+    log "Waiting for Dataverse API to become available..."
+    local max_wait=300; local interval=10; local elapsed=0
+    while [ $elapsed -lt $max_wait ]; do
+        if curl -s -k http://localhost:8080/api/v1/info/server &> /dev/null; then
+            log "Dataverse API is responsive."
             break
         fi
-        RETRY_COUNT=$((RETRY_COUNT + 1))
-        log "Payara not ready yet (attempt $RETRY_COUNT/$MAX_RETRIES), waiting 2s..."
-        sleep 2
+        sleep $interval
+        elapsed=$((elapsed + interval))
+        if [ $elapsed -ge $max_wait ]; then
+            log "ERROR: Timed out waiting for Dataverse API. Cannot re-index."
+            STATUS_POST_SETUP="FAILURE"
+            return 1
+        fi
     done
     
-    if [ $RETRY_COUNT -eq $MAX_RETRIES ]; then
-        log "Warning: Payara did not become ready in time. Some operations may fail."
-    fi
-    
-    # Reindex Solr
+    # --- 3. Clear and Rebuild Solr Index ---
     log "Clearing Solr index..."
-    if ! sudo -u "$DATAVERSE_USER" curl -s http://localhost:8080/api/admin/index/clear; then
-        log_warning "Failed to clear Solr index"
-    fi
-
-    log "Starting Solr reindex..."
-    if ! sudo -u "$DATAVERSE_USER" curl -s http://localhost:8080/api/admin/index; then
-        log_warning "Failed to start Solr reindex"
+    if ! curl -s "http://localhost:8080/api/admin/index/clear"; then
+        log "Warning: Failed to clear Solr index. Re-indexing may be incomplete."
     else
-        if ! wait_for_dataverse_reindex_api; then
-            log_warning "Dataverse reindex did not complete successfully or timed out. Manual check may be required."
-        fi
+        log "Solr index cleared successfully."
     fi
 
-    # Update metadata exports
-    log "Updating metadata exports..."
-    if ! sudo -u "$DATAVERSE_USER" curl -s http://localhost:8080/api/admin/metadata/reExportAll; then
-        log_warning "Failed to update metadata exports"
-    fi
-    
-    # Set up cron jobs
-    log "Setting up cron jobs..."
-    if [ -n "$COUNTER_DAILY_SCRIPT" ]; then
-        # Check if script exists and is different
-        if [ -f "$COUNTER_DAILY_SCRIPT" ]; then
-            if [ ! -f "/etc/cron.daily/$(basename "$COUNTER_DAILY_SCRIPT")" ] || \
-               ! cmp -s "$COUNTER_DAILY_SCRIPT" "/etc/cron.daily/$(basename "$COUNTER_DAILY_SCRIPT")"; then
-                if ! sudo cp "$COUNTER_DAILY_SCRIPT" "/etc/cron.daily/"; then
-                    log "Warning: Failed to copy counter daily script"
-                else
-                    sudo chmod +x "/etc/cron.daily/$(basename "$COUNTER_DAILY_SCRIPT")"
-                    log "Counter daily script installed successfully"
-                fi
-            else
-                log "Counter daily script already exists and is up to date"
+    log "Starting full Solr re-index..."
+    local index_response
+    index_response=$(curl -s "http://localhost:8080/api/admin/index")
+    if [[ "$index_response" != *"started"* ]]; then
+        log "Warning: Failed to start re-index command. Response: $index_response"
+    else
+        log "Re-index command sent. Now waiting for completion..."
+        # Wait for indexing to complete
+        max_wait=1800 # 30 minutes, adjust if needed
+        elapsed=0
+        while [ $elapsed -lt $max_wait ]; do
+            if ! curl -s "http://localhost:8080/api/admin/index/status" | grep -q '"isInHeader":true'; then
+                log "SUCCESS: Solr re-indexing is complete."
+                break
             fi
-        else
-            log "Warning: Counter daily script not found at $COUNTER_DAILY_SCRIPT"
-        fi
+            log "Waiting for re-index to finish... (checking in 30s)"
+            sleep 30
+            elapsed=$((elapsed + 30))
+            if [ $elapsed -ge $max_wait ]; then
+                log "ERROR: Timed out waiting for re-index to complete. Please check the Solr index manually."
+                STATUS_POST_SETUP="FAILURE"
+                # The script will continue, but the status is marked as failed.
+            fi
+        done
     fi
-    
-    # Restart services
-    log "Restarting services..."
-    if ! sudo systemctl restart payara; then
-        log "Warning: Failed to restart Payara"
-    fi
-    if ! sudo systemctl restart solr; then
-        log "Warning: Failed to restart Solr"
-    fi
-    
-    log "Post-transfer setup completed"
+
+    log "Post-transfer setup completed."
+    STATUS_POST_SETUP="SUCCESS"
     return 0
 }
 
@@ -2354,7 +2353,7 @@ restore_from_backup() {
         log_warning "Failed to reindex Solr"
     else
         log "Solr reindex started. Waiting for completion..."
-        if ! wait_for_dataverse_reindex_api; then
+        if ! wait_for_dataverse_reindex_api "$ITEMS_TO_REINDEX"; then
             log_warning "Dataverse reindex (after restore) did not complete successfully or timed out. Manual check may be required."
         fi
     fi
@@ -2485,216 +2484,277 @@ configure_payara_ddl_settings() {
     return 0
 }
 
-# Function to check if a port is open using /dev/tcp
-check_port() {
-    local host="$1"
-    local port="$2"
-    (echo > /dev/tcp/$host/$port) >/dev/null 2>&1
+# Function to get a single raw value from a query
+get_sql_value() {
+    local query="$1"
+    local psql_output
+    if [ -n "$DB_PASSWORD" ]; then
+        export PGPASSWORD="$DB_PASSWORD"
+        psql_output=$(sudo -u "$DB_SYSTEM_USER" psql -d "$DB_NAME" -t -c "$query" 2>&1)
+        unset PGPASSWORD
+    else
+        psql_output=$(sudo -u "$DB_SYSTEM_USER" psql -d "$DB_NAME" -t -c "$query" 2>&1)
+    fi
+    # Trim leading/trailing whitespace
+    echo "$psql_output" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//'
 }
 
-# Function to check if Payara is running and ready
-wait_for_payara() {
-    local max_retries=60
-    local retry_count=0
-    local payara_ok=false
+# Function to run a SELECT query and display results
+run_select_query() {
+    local query="$1"
+    log "Running query to display to user." # Don't log query itself, it can be large
+    # Using psql with -P format=aligned -P null='(null)' for better readability
+    if [ -n "$DB_PASSWORD" ]; then
+        export PGPASSWORD="$DB_PASSWORD"
+        sudo -u "$DB_SYSTEM_USER" psql -d "$DB_NAME" -P format=aligned -P null='(null)' -c "$query"
+        local psql_exit_code=$?
+        unset PGPASSWORD
+    else
+        sudo -u "$DB_SYSTEM_USER" psql -d "$DB_NAME" -P format=aligned -P null='(null)' -c "$query"
+        local psql_exit_code=$?
+    fi
+    return $psql_exit_code
+}
 
-    log "Checking if Payara is running and ready..."
+# Function to check template integrity
+check_template_integrity() {
+    echo ""
+    log "=== METADATA TEMPLATE INTEGRITY CHECK ==="
 
-    # Try to start Payara if not running
-    if ! sudo systemctl is-active --quiet payara; then
-        log "Payara is not running. Attempting to start Payara..."
-        if ! sudo systemctl start payara; then
-            log "ERROR: Failed to start Payara."
-            return 1
-        fi
+    # List available templates
+    local list_templates_query="SELECT id, name FROM public.template ORDER BY name;"
+    echo "Available templates:"
+    run_select_query "$list_templates_query"
+
+    if [ $? -ne 0 ]; then
+        log_warning "Could not fetch list of templates."
+        # Don't exit, maybe user knows the name
     fi
 
-    # Wait for port 8080 (Dataverse API) and 4848 (admin) to be open
-    while [ $retry_count -lt $max_retries ]; do
-        if curl -s -f http://localhost:8080/api/info/version >/dev/null 2>&1 && \
-           check_port localhost 4848; then
-            payara_ok=true
-            break
-        fi
-        log "Waiting for Payara to be ready (attempt $((retry_count+1))/$max_retries)..."
-        sleep 5
-        retry_count=$((retry_count+1))
-    done
+    echo ""
+    echo -n "Please enter the name or number of the template to check (or press Enter to cancel): "
+    read -r template_name
 
-    if [ "$payara_ok" = true ]; then
-        log "Payara is running and ready."
+    if [ -z "$template_name" ]; then
+        log "Template check cancelled."
         return 0
-    else
-        log "ERROR: Payara did not become ready in time."
+    fi
+    # If the user enters a number, convert it to a name
+    if [[ "$template_name" =~ ^[0-9]+$ ]]; then
+        template_name_from_id=$(get_sql_value "SELECT name FROM public.template WHERE id = $template_name;")
+        if [ -n "$template_name_from_id" ]; then
+            log "Checking template ID $template_name which is named '$template_name_from_id'"
+            template_name="$template_name_from_id"
+        else
+            log_warning "No template found with ID $template_name."
         return 1
     fi
+    fi
+    # Sanitize input to prevent injection. Although it's used in '', it's good practice.
+    # Simple sanitization: remove single quotes, backslashes, and semicolons.
+    template_name=$(echo "$template_name" | sed "s/[';\\\\]//g")
+
+    log "Checking template configuration for: $template_name"
+    echo "----------------------------------------"
+  
+    # Check template association with dataverse
+    local query="
+    SELECT 
+        t.id as template_id,
+        t.name as template_name,
+        d.id as dataverse_id,
+        d.name as dataverse_name,
+        d.defaulttemplate_id
+    FROM 
+        public.template t
+    LEFT JOIN 
+        public.dataverse d ON t.dataverse_id = d.id
+    WHERE 
+        t.name = '$template_name';"
+  
+    echo "Template-Dataverse Association (is this template the default for any dataverse?):"
+    run_select_query "$query"
+    echo "----------------------------------------"
+  
+    # Check if the dataverses using this template have the required metadatablocks enabled
+    query="
+    WITH TemplateDataverses AS (
+        SELECT d.id as dataverse_id, d.name as dataverse_name
+        FROM public.template t
+        JOIN public.dataverse d ON t.id = d.defaulttemplate_id
+        WHERE t.name = '$template_name'
+        UNION
+        SELECT d.id, d.name
+        FROM public.template t
+        JOIN public.dataverse d ON t.dataverse_id = d.id
+        WHERE t.name = '$template_name'
+    ),
+    TemplateMetadataBlocks AS (
+        SELECT DISTINCT dft.metadatablock_id
+        FROM public.template t
+        JOIN public.datasetfield df ON t.id = df.template_id
+        JOIN public.datasetfieldtype dft ON df.datasetfieldtype_id = dft.id
+        WHERE t.name = '$template_name'
+    )
+    SELECT 
+        td.dataverse_name,
+        mb.name as metadatablock_name,
+        CASE 
+            WHEN dmb.metadatablocks_id IS NOT NULL THEN 'ENABLED'
+            ELSE 'MISSING'
+        END as status
+    FROM TemplateDataverses td
+    CROSS JOIN TemplateMetadataBlocks tmb
+    JOIN public.metadatablock mb ON tmb.metadatablock_id = mb.id
+    LEFT JOIN public.dataverse_metadatablock dmb 
+        ON tmb.metadatablock_id = dmb.metadatablocks_id AND td.dataverse_id = dmb.dataverse_id
+    ORDER BY td.dataverse_name, mb.name;
+    "
+  
+    echo "Metadata Block Associations for Dataverses using this template:"
+    run_select_query "$query"
+    echo "----------------------------------------"
+  
+    # Check field input levels for the dataverses using this template
+    query="
+    WITH TemplateDataverses AS (
+        SELECT d.id as dataverse_id, d.name as dataverse_name
+        FROM public.template t
+        JOIN public.dataverse d ON t.id = d.defaulttemplate_id
+        WHERE t.name = '$template_name'
+        UNION
+        SELECT d.id, d.name
+        FROM public.template t
+        JOIN public.dataverse d ON t.dataverse_id = d.id
+        WHERE t.name = '$template_name'
+    )
+    SELECT
+        dft.name as field_name,
+        td.dataverse_name,
+        -- If dfil is null, it means the field is optional and included by default
+        COALESCE(dfil.include, true) as included,
+        COALESCE(dfil.required, false) as required
+    FROM public.template t
+    JOIN public.datasetfield df ON t.id = df.template_id
+    JOIN public.datasetfieldtype dft ON df.datasetfieldtype_id = dft.id
+    -- All dataverses using the template
+    CROSS JOIN TemplateDataverses td
+    -- Find the specific input level for that field in that dataverse
+    LEFT JOIN public.dataversefieldtypeinputlevel dfil 
+        ON dft.id = dfil.datasetfieldtype_id AND td.dataverse_id = dfil.dataverse_id
+    WHERE 
+        t.name = '$template_name'
+    ORDER BY 
+        td.dataverse_name, dft.displayorder;
+    "
+    
+    echo "Field Input Levels for Dataverses using this template:"
+    run_select_query "$query"
+    log "Template integrity check finished."
+    return 0
 }
 
-# Global array to collect warnings
-WARNINGS=()
+# Function to compare domain.xml between production and local
+compare_domain_configs() {
+    echo ""
+    log "=== DOMAIN.XML CONFIGURATION COMPARISON ==="
+    local prod_ssh_target="$1"
+    local local_domain_xml="/usr/local/payara6/glassfish/domains/domain1/config/domain.xml"
+    local temp_dir
 
-# Function to log and collect warnings
-log_warning() {
-    log "Warning: $1"
-    WARNINGS+=("$1")
+    if ! temp_dir=$(mktemp -d); then
+        log "ERROR: Could not create temporary directory for config comparison."
+        return 1
+    fi
+
+    log "Temporary directory created at: $temp_dir"
+    local prod_domain_xml_path="$temp_dir/domain.xml.prod"
+
+    log "Fetching domain.xml from production server: $prod_ssh_target"
+    if ! scp "$prod_ssh_target:$local_domain_xml" "$prod_domain_xml_path"; then
+        log "ERROR: Failed to fetch domain.xml from production server."
+        rm -rf "$temp_dir"
+        return 1
+    fi
+
+    log "Comparing local domain.xml with production version..."
+    local diff_output
+    diff_output=$(diff -u "$local_domain_xml" "$prod_domain_xml_path")
+
+    if [ -z "$diff_output" ]; then
+        log "✅ SUCCESS: Local domain.xml is identical to production."
+    else
+        log "⚠️  WARNING: Differences found between local and production domain.xml."
+        echo ""
+        log "--- DIFF START ---"
+        echo "$diff_output" | tee -a "$LOGFILE"
+        log "--- DIFF END ---"
+        echo ""
+        echo "Differences between the local and production domain.xml have been logged."
+    fi
+
+    rm -rf "$temp_dir"
+    log "Comparison complete."
+    return 0
 }
 
-# Function to fetch production S3 JVM options early
-pre_sync_fetch_prod_jvm_s3_options() {
-    log "Performing pre-sync fetch of production JVM S3 options..."
+# Function to intelligently sync system-properties from production domain.xml
+sync_domain_properties() {
+    echo ""
+    log "=== INTELLIGENT DOMAIN.XML PROPERTY SYNC ==="
+    local prod_ssh_target="$1"
+    local local_domain_xml="/usr/local/payara6/glassfish/domains/domain1/config/domain.xml"
+    local temp_dir
+    local asadmin_cmd="sudo -u $DATAVERSE_USER /usr/local/payara6/bin/asadmin"
 
-    # Ensure PROD_S3_OPTIONS is initialized or cleared before populating
-    PROD_S3_OPTIONS=()
-    PROD_S3_DUPLICATES=()
+    if ! temp_dir=$(mktemp -d); then
+        log "ERROR: Could not create temp dir for property sync."
+        return 1
+    fi
 
-    if [ -n "$PRODUCTION_PAYARA" ] && [ -n "$PRODUCTION_DATAVERSE_USER" ] && [ -n "$PRODUCTION_SSH_USER" ] && [ -n "$PRODUCTION_SERVER" ]; then
-        log "Fetching all JVM options from production (for S3 pre-check)..."
-        # Determine the correct Payara path on production
-        local current_prod_payara_path="${PRODUCTION_PAYARA:-$PAYARA}" # Fallback to local PAYARA if PRODUCTION_PAYARA is not set
-        
-        PROD_ALL_JVM_OPTIONS_TEMP=$(ssh "$PRODUCTION_SSH_USER@$PRODUCTION_SERVER" "sudo -u \"$PRODUCTION_DATAVERSE_USER\" \"$current_prod_payara_path/bin/asadmin\" list-jvm-options" 2>/dev/null)
-        
-        if [ $? -eq 0 ] && [ -n "$PROD_ALL_JVM_OPTIONS_TEMP" ]; then
-            log "Successfully fetched all JVM options from production for S3 pre-scan."
-            # scan_s3_jvm_options populates global PROD_S3_OPTIONS and PROD_S3_DUPLICATES
-            scan_s3_jvm_options "$PROD_ALL_JVM_OPTIONS_TEMP" true # true for production
-            if [ ${#PROD_S3_OPTIONS[@]} -gt 0 ]; then
-                log "Production S3 JVM options pre-fetched: ${PROD_S3_OPTIONS[*]}"
-            else
-                log "No S3-related JVM options found in production during pre-scan."
+    local prod_domain_xml_path="$temp_dir/domain.xml.prod"
+
+    log "Fetching domain.xml from production to analyze its system properties..."
+    if ! scp "$prod_ssh_target:$local_domain_xml" "$prod_domain_xml_path"; then
+        log "ERROR: Failed to fetch domain.xml from production."
+        rm -rf "$temp_dir"
+        return 1
+    fi
+
+    log "Extracting non-storage system properties from production config..."
+    # Use grep to find system-property lines, then grep -v to exclude storage-related ones
+    local props_to_sync
+    props_to_sync=$(grep '<system-property ' "$prod_domain_xml_path" | grep -v -e 'dataverse.files' -e 'S3')
+
+    if [ -z "$props_to_sync" ]; then
+        log "No non-storage system properties to sync from production."
+        rm -rf "$temp_dir"
+        return 0
+    fi
+
+    log "The following non-storage properties will be synced from production:"
+    echo "$props_to_sync"
+
+    # Loop through each property and apply it using asadmin
+    echo "$props_to_sync" | while IFS= read -r prop_line; do
+        local prop_name
+        local prop_value
+        prop_name=$(echo "$prop_line" | sed -n 's/.*name="\([^"]*\)".*/\1/p')
+        prop_value=$(echo "$prop_line" | sed -n 's/.*value="\([^"]*\)".*/\1/p')
+
+        if [ -n "$prop_name" ] && [ -n "$prop_value" ]; then
+            log "Syncing property: $prop_name=$prop_value"
+            # Use asadmin to set the property. This is safer than editing the file directly.
+            # It handles creating or updating the property.
+            if ! $asadmin_cmd set-system-properties "${prop_name}=${prop_value}"; then
+                log "WARNING: Failed to set system property '$prop_name'."
             fi
-        else
-            log_warning "Failed to fetch JVM options from production during pre-scan. S3 detection via JVM options might be incomplete."
         fi
-    else
-        log_warning "Production Payara/User/SSH variables not fully set; cannot pre-fetch JVM S3 options."
-    fi
-}
+    done
 
-# Function to check and compare critical software versions between prod and stage
-check_versions() {
-    log "Checking version compatibility between production and stage..."
-
-    # Use override paths if set, else fall back to local paths
-    PROD_PAYARA_PATH="${PRODUCTION_PAYARA:-$PAYARA}"
-    PROD_SOLR_PATH="${PRODUCTION_SOLR_PATH:-$SOLR_PATH}"
-
-    # Warn if any critical variables are empty
-    if [ -z "$PROD_PAYARA_PATH" ]; then
-        log_warning "PROD_PAYARA_PATH is empty! Set PAYARA or PRODUCTION_PAYARA in your .env."
-    fi
-    if [ -z "$PROD_SOLR_PATH" ]; then
-        log_warning "PROD_SOLR_PATH is empty! Set SOLR_PATH or PRODUCTION_SOLR_PATH in your .env."
-    fi
-    if [ -z "$PRODUCTION_SSH_USER" ] || [ -z "$PRODUCTION_SERVER" ]; then
-        log_warning "PRODUCTION_SSH_USER or PRODUCTION_SERVER is empty! Check your .env."
-    fi
-
-    # On production
-    log "Fetching versions from production..."
-    # Payara
-    log "DEBUG: Running SSH command: ssh $PRODUCTION_SSH_USER@$PRODUCTION_SERVER '$PROD_PAYARA_PATH/bin/asadmin version | grep Version'"
-    PROD_PAYARA_VERSION=$(ssh "$PRODUCTION_SSH_USER@$PRODUCTION_SERVER" "'$PROD_PAYARA_PATH/bin/asadmin' version | grep 'Version'" 2>/dev/null)
-    # Solr (use Solr API for version, fallback if jq is missing)
-    PROD_SOLR_VERSION=$(ssh "$PRODUCTION_SSH_USER@$PRODUCTION_SERVER" bash <<'ENDSSH'
-if command -v jq >/dev/null 2>&1; then
-    curl -s "http://localhost:8983/solr/admin/info/system?wt=json" | jq -r '.lucene."solr-spec-version" // empty'
-else
-    # Fallback: grep for solr-spec-version in the raw JSON
-    curl -s "http://localhost:8983/solr/admin/info/system?wt=json" | grep -o '"solr-spec-version":"[^"]*"' | head -1 | sed 's/.*:"\([^"]*\)"/\1/'
-fi
-ENDSSH
-)
-    if [ -z "$PROD_SOLR_VERSION" ]; then
-        RAW_SOLR_API_OUTPUT=$(ssh "$PRODUCTION_SSH_USER@$PRODUCTION_SERVER" "curl -s 'http://localhost:8983/solr/admin/info/system?wt=json' | head -c 400" 2>/dev/null)
-        log_warning "Could not determine Solr version from API on production. Is Solr running and accessible on port 8983? Raw output: $RAW_SOLR_API_OUTPUT"
-    fi
-    # PostgreSQL
-    PROD_PG_VERSION=$(ssh "$PRODUCTION_SSH_USER@$PRODUCTION_SERVER" "psql --version" 2>/dev/null)
-    # Java
-    PROD_JAVA_VERSION=$(ssh "$PRODUCTION_SSH_USER@$PRODUCTION_SERVER" "java -version 2>&1 | head -1" 2>/dev/null)
-    # Dataverse WAR version: check if file exists, then extract Implementation-Version
-    PROD_DV_WAR=$(ssh "$PRODUCTION_SSH_USER@$PRODUCTION_SERVER" "ls -1 $PROD_PAYARA_PATH/glassfish/domains/domain1/applications/dataverse* | grep -E 'dataverse(-[0-9.]+)?$' | head -1")
-    if ssh "$PRODUCTION_SSH_USER@$PRODUCTION_SERVER" "[ -f '$PROD_DV_WAR' ]"; then
-        PROD_DV_VERSION=$(ssh "$PRODUCTION_SSH_USER@$PRODUCTION_SERVER" "unzip -p '$PROD_DV_WAR' META-INF/MANIFEST.MF | grep Implementation-Version" 2>/dev/null)
-        if [ -z "$PROD_DV_VERSION" ]; then
-            log_warning "Dataverse WAR manifest found but Implementation-Version is missing or empty in $PROD_DV_WAR"
-        fi
-    else
-        log_warning "Dataverse WAR file not found at $PROD_DV_WAR"
-        PROD_DV_VERSION=""
-    fi
-
-    # Warn if any version output is empty (except Dataverse WAR, which is handled above)
-    if [ -z "$PROD_PAYARA_VERSION" ]; then
-        log_warning "Could not determine Payara version on production. Check path: $PROD_PAYARA_PATH"
-    fi
-    if [ -z "$PROD_SOLR_VERSION" ]; then
-        log_warning "Could not determine Solr version on production. Check path: $PROD_SOLR_PATH"
-    fi
-    if [ -z "$PROD_PG_VERSION" ]; then
-        log_warning "Could not determine PostgreSQL version on production."
-    fi
-    if [ -z "$PROD_JAVA_VERSION" ]; then
-        log_warning "Could not determine Java version on production."
-    fi
-
-    # Locally
-    log "Fetching versions from stage/clone..."
-    STAGE_PAYARA_ASADMIN_OUTPUT=$($PAYARA/bin/asadmin version 2>&1)
-    log "--- Stage Payara asadmin raw output: $STAGE_PAYARA_ASADMIN_OUTPUT"
-    STAGE_PAYARA_VERSION=$(echo "$STAGE_PAYARA_ASADMIN_OUTPUT" | grep '^Version =')
-    STAGE_SOLR_VERSION=$(if command -v jq >/dev/null 2>&1; then
-        curl -s "http://localhost:8983/solr/admin/info/system?wt=json" | jq -r '.lucene."solr-spec-version" // empty'
-    else
-        curl -s "http://localhost:8983/solr/admin/info/system?wt=json" | grep -o '"solr-spec-version":"[^"]*"' | head -1 | sed 's/.*:"\([^"]*\)"/\1/'
-    fi)
-    STAGE_PG_VERSION=$(psql --version)
-    STAGE_JAVA_VERSION=$(java -version 2>&1 | head -1)
-    STAGE_DV_VERSION=$(unzip -p $PAYARA/glassfish/domains/domain1/applications/dataverse.war META-INF/MANIFEST.MF | grep Implementation-Version)
-
-    # Print and compare
-    log "Production Payara: $PROD_PAYARA_VERSION"
-    log "--- Stage Payara: $STAGE_PAYARA_VERSION"
-    log "Production Solr: $PROD_SOLR_VERSION"
-    log "--- Stage Solr: $STAGE_SOLR_VERSION"
-    log "Production PostgreSQL: $PROD_PG_VERSION"
-    log "--- Stage PostgreSQL: $STAGE_PG_VERSION"
-    log "Production Java: $PROD_JAVA_VERSION"
-    log "--- Stage Java: $STAGE_JAVA_VERSION"
-    log "Production Dataverse WAR: $PROD_DV_VERSION"
-    log "--- Stage Dataverse WAR: $STAGE_DV_VERSION"
-
-    HAS_MISMATCH=false
-    if [ "$PROD_PAYARA_VERSION" != "$STAGE_PAYARA_VERSION" ]; then
-        log_warning "Payara version mismatch!"
-        HAS_MISMATCH=true
-    fi
-    if [ "$PROD_SOLR_VERSION" != "$STAGE_SOLR_VERSION" ]; then
-        log_warning "Solr version mismatch!"
-        HAS_MISMATCH=true
-    fi
-    if [ "$PROD_PG_VERSION" != "$STAGE_PG_VERSION" ]; then
-        log_warning "PostgreSQL version mismatch!"
-        HAS_MISMATCH=true
-    fi
-    if [ "$PROD_JAVA_VERSION" != "$STAGE_JAVA_VERSION" ]; then
-        log_warning "Java version mismatch!"
-        HAS_MISMATCH=true
-    fi
-    if [ "$PROD_DV_VERSION" != "$STAGE_DV_VERSION" ]; then
-        log_warning "Dataverse WAR version mismatch!"
-        HAS_MISMATCH=true
-    fi
-
-    if [ "$HAS_MISMATCH" = true ]; then
-        echo -e "\nWARNING: Version mismatches detected. Continue anyway? (yes/no): "
-        read -r CONTINUE
-        if [ "$CONTINUE" != "yes" ]; then
-            log "Aborting due to version mismatch."
-            exit 1
-        fi
-    fi
+    rm -rf "$temp_dir"
+    log "Intelligent domain property sync complete. A Payara restart is needed."
+    return 0
 }
 
 # Main function
@@ -2707,9 +2767,8 @@ main() {
     STATUS_COUNTER="NOT_ATTEMPTED"
     STATUS_EXTERNAL_TOOLS="NOT_ATTEMPTED"
     STATUS_JVM_OPTIONS="NOT_ATTEMPTED"
-    STATUS_METADATA_BLOCKS="NOT_ATTEMPTED"
-    STATUS_DEPENDENCIES="NOT_ATTEMPTED"
     STATUS_POST_SETUP="NOT_ATTEMPTED"
+    STATUS_TEMPLATE_CHECK="NOT_ATTEMPTED"
 
     # Check version compatibility before proceeding
     check_versions
@@ -2753,17 +2812,13 @@ main() {
                 SKIP_JVM_OPTIONS=true
                 STATUS_JVM_OPTIONS="SKIPPED"
                 ;;
-            --skip-metadata-blocks)
-                SKIP_METADATA_BLOCKS=true
-                STATUS_METADATA_BLOCKS="SKIPPED"
-                ;;
-            --skip-dependencies)
-                SKIP_DEPENDENCIES=true
-                STATUS_DEPENDENCIES="SKIPPED"
-                ;;
             --skip-post-setup)
                 SKIP_POST_SETUP=true
                 STATUS_POST_SETUP="SKIPPED"
+                ;;
+            --skip-template-check)
+                SKIP_TEMPLATE_CHECK=true
+                STATUS_TEMPLATE_CHECK="SKIPPED"
                 ;;
             --cleanup-backups)
                 CLEANUP_BACKUPS=true
@@ -2787,16 +2842,31 @@ main() {
                 echo "  --skip-backup      Skip backup of clone server before sync"
                 echo "  --skip-external-tools    Skip external tools sync"
                 echo "  --skip-jvm-options      Skip JVM options sync"
-                echo "  --skip-metadata-blocks  Skip metadata blocks sync"
-                echo "  --skip-dependencies     Skip service dependencies check"
                 echo "  --skip-post-setup      Skip post-transfer setup"
+                echo "  --skip-template-check   Skip template integrity check"
                 echo "  --cleanup-backups  Clean up old backups before starting"
                 echo "  --restore          Restore from backup"
                 echo "  --restore-path=PATH  Specify backup path for restore"
                 echo "  --help             Show this help message"
                 exit 0
                 ;;
+            --full-copy)
+                FULL_COPY=true
+                ;;
+            --restore-from-backup)
+                RESTORE_FROM_BACKUP=true; BACKUP_PATH="${2:-}"; shift ;;
+            --configure-ddl)
+                CONFIGURE_DDL=true
+                ;;
+            --compare-configs)
+                COMPARE_CONFIGS=true
+                ;;
+            -h | --help)
+                print_help; exit 0 ;;
+            *)
+                echo "Unknown option: $1"; print_help; exit 1 ;;
         esac
+        shift
     done
 
     # Initialize variables
@@ -2810,9 +2880,8 @@ main() {
     SKIP_BACKUP=${SKIP_BACKUP:-false}
     SKIP_EXTERNAL_TOOLS=${SKIP_EXTERNAL_TOOLS:-false}
     SKIP_JVM_OPTIONS=${SKIP_JVM_OPTIONS:-false}
-    SKIP_METADATA_BLOCKS=${SKIP_METADATA_BLOCKS:-false}
-    SKIP_DEPENDENCIES=${SKIP_DEPENDENCIES:-false}
     SKIP_POST_SETUP=${SKIP_POST_SETUP:-false}
+    SKIP_TEMPLATE_CHECK=${SKIP_TEMPLATE_CHECK:-false}
     CLEANUP_BACKUPS=${CLEANUP_BACKUPS:-false}
     RESTORE=${RESTORE:-false}
 
@@ -2951,7 +3020,7 @@ main() {
         fi
     fi
 
-    # Check SSL certificate validity
+    log "Checking SSL certificate validity..."
     CERT_EXPIRED=false
     check_ssl_certificates "$DOMAIN"
 
@@ -3018,41 +3087,41 @@ main() {
         fi
     fi
 
-    # Step 1: Check service dependencies
-    if [ "$SKIP_DEPENDENCIES" = false ]; then
-        if ! check_service_dependencies; then
-            log "ERROR: Service dependencies check failed. Aborting."
-            SCRIPT_OVERALL_STATUS="FAILURE"
-            STATUS_DEPENDENCIES="FAILED"
-            print_final_summary "$DRY_RUN"
-            exit 1
-        fi
-        STATUS_DEPENDENCIES="SUCCESS"
-    fi
-
-    # Stop Payara before database operations if DB is not skipped
-    if [ "$SKIP_DB" = false ] && [ "$DRY_RUN" = false ]; then
-        log "Stopping Payara before database operations..."
+    # --- STOP PAYARA BEFORE ANY MAJOR OPERATIONS ---
+    if [ "$DRY_RUN" = true ]; then
+        log "DRY RUN: Would stop Payara service now."
+    else
+        log "Stopping Payara service before sync operations..."
         if ! sudo systemctl stop payara; then
-            log "Warning: Failed to stop Payara. Database operations might fail if Payara holds connections."
+            log "Warning: Failed to stop Payara. Database operations may fail."
         else
             log "Payara stopped successfully."
         fi
     fi
+    # --- END PAYARA STOP ---
 
-    # Step 2: Database Operations
+    # Step 1: Database Operations
     if [ "$SKIP_DB" = false ]; then
         if ! sync_database; then
-            log "ERROR: Database sync failed. Rolling back..."
-            STATUS_DATABASE="FAILED_ROLLED_BACK"
+            log "ERROR: Database sync failed. Aborting."
             SCRIPT_OVERALL_STATUS="FAILURE"
+            STATUS_DATABASE="FAILED"
             print_final_summary "$DRY_RUN"
+            # Attempt to restart payara on failure
+            sudo systemctl start payara &>/dev/null
             exit 1
         fi
         STATUS_DATABASE="SUCCESS"
     fi
 
-    # Step 3: File Operations
+    # After DB sync, and after S3/local choice has been made, configure JVM if needed
+    if [ "$S3_CONFIG_CHOICE" == "2" ] && [ "$DRY_RUN" = false ]; then
+        log "Choice was made to use local file storage; configuring JVM options now."
+        if ! configure_local_storage_jvm_options; then
+            log_warning "Configuration of local storage JVM options failed. Storage may not work correctly."
+        fi
+    fi
+
     if [ "$SKIP_FILES" = false ]; then
         if ! sync_files; then
             log "ERROR: File sync failed. Rolling back..."
@@ -3064,7 +3133,6 @@ main() {
         STATUS_FILES="SUCCESS"
     fi
 
-    # Step 4: Solr Operations
     if [ "$SKIP_SOLR" = false ]; then
         if ! sync_solr; then
             log "ERROR: Solr sync failed. Rolling back..."
@@ -3076,7 +3144,6 @@ main() {
         STATUS_SOLR="SUCCESS"
     fi
 
-    # Step 5: Counter Processor Operations
     if [ "$SKIP_COUNTER" = false ]; then
         if ! sync_counter_processor; then
             log "ERROR: Counter processor sync failed. Rolling back..."
@@ -3088,73 +3155,32 @@ main() {
         STATUS_COUNTER="SUCCESS"
     fi
 
-    # Step 6: External Tools Operations
+    # Restart Payara now that core syncs are done
+    if [ "$DRY_RUN" = true ]; then
+        log "DRY RUN: Would start Payara service now."
+    else
+        start_payara
+        if [ $? -ne 0 ]; then
+            log "Critical error: Payara failed to start. Aborting subsequent steps."
+            # You might want to set remaining statuses to FAILURE or SKIPPED here
+            exit 1 # Or handle this less abruptly
+        fi
+    fi
+
     if [ "$SKIP_EXTERNAL_TOOLS" = false ]; then
-        if ! wait_for_payara; then
-            log "ERROR: Payara is not running or not ready. Cannot continue with external tools sync."
-            SCRIPT_OVERALL_STATUS="FAILURE"
-            print_final_summary "$DRY_RUN"
-            exit 1
-        fi
-        if ! sync_external_tools; then
-            log "ERROR: External tools sync failed. Rolling back..."
-            STATUS_EXTERNAL_TOOLS="FAILED_ROLLED_BACK"
-            SCRIPT_OVERALL_STATUS="FAILURE"
-            print_final_summary "$DRY_RUN"
-            exit 1
-        fi
-        STATUS_EXTERNAL_TOOLS="SUCCESS"
+        sync_external_tools
+        STATUS_EXTERNAL_TOOLS=$([ $? -eq 0 ] && echo "SUCCESS" || echo "FAILURE")
+    else
+        log "Skipping external tools sync as requested."
+        STATUS_EXTERNAL_TOOLS="SKIPPED"
     fi
 
-    # Step 7: JVM Options Operations
-    if [ "$SKIP_JVM_OPTIONS" = false ]; then
-        if ! wait_for_payara; then
-            log "ERROR: Payara is not running or not ready. Cannot continue with JVM options sync."
-            SCRIPT_OVERALL_STATUS="FAILURE"
-            print_final_summary "$DRY_RUN"
-            exit 1
-        fi
-        if ! verify_jvm_options; then
-            log "ERROR: JVM options sync failed. Rolling back..."
-            STATUS_JVM_OPTIONS="FAILED_ROLLED_BACK"
-            SCRIPT_OVERALL_STATUS="FAILURE"
-            print_final_summary "$DRY_RUN"
-            exit 1
-        fi
-        STATUS_JVM_OPTIONS="SUCCESS"
-    fi
-
-    # Step 8: Metadata Blocks Operations
-    if [ "$SKIP_METADATA_BLOCKS" = false ]; then
-        if ! sync_metadata_blocks; then
-            log "ERROR: Metadata blocks sync failed. Rolling back..."
-            STATUS_METADATA_BLOCKS="FAILED_ROLLED_BACK"
-            SCRIPT_OVERALL_STATUS="FAILURE"
-            print_final_summary "$DRY_RUN"
-            exit 1
-        fi
-        STATUS_METADATA_BLOCKS="SUCCESS"
-    fi
-
-    # Step 9: Post-Transfer Setup
     if [ "$SKIP_POST_SETUP" = false ]; then
-        if ! post_transfer_setup; then
-            log "ERROR: Post-transfer setup failed. Rolling back..."
-            STATUS_POST_SETUP="FAILED_ROLLED_BACK"
-            SCRIPT_OVERALL_STATUS="FAILURE"
-            print_final_summary "$DRY_RUN"
-            exit 1
-        fi
-        STATUS_POST_SETUP="SUCCESS"
-    elif [ "$SKIP_DB" = false ] && [ "$DRY_RUN" = false ]; then 
-        # If post_transfer_setup was skipped BUT database operations were done, 
-        # ensure Payara is started as it was stopped before sync_database.
-        log "Restarting Payara after database operations (post-setup was skipped)..."
-        if ! sudo systemctl start payara; then
-            log "Warning: Failed to restart Payara after database operations."
-        else
-            log "Payara restarted successfully."
-        fi
+        post_transfer_setup
+        STATUS_POST_SETUP=$([ $? -eq 0 ] && echo "SUCCESS" || echo "FAILURE")
+    else
+        log "Skipping post-transfer setup as requested."
+        STATUS_POST_SETUP="SKIPPED"
     fi
 
     # Clean up
@@ -3187,6 +3213,15 @@ main() {
 
     log "Sync completed successfully"
     print_final_summary "$DRY_RUN"
+
+    # Execute comparison if requested and exit
+    if [ "$COMPARE_CONFIGS" = true ]; then
+        log "Starting configuration comparison as requested."
+        sync_domain_properties "$PRODUCTION_SSH_USER@$PRODUCTION_SERVER"
+        log "Comparison finished. Exiting script as requested."
+        exit 0
+    fi
+
     return 0
 }
 
