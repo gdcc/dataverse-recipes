@@ -11,7 +11,7 @@ This folder contains scripts that generate reports on Persistent Identifier (PID
 
 ## Scripts
 
-The main script in this folder is `dcpidreport.py`, which checks DataCite for DOI resolution and generates reports on failures. Anything reported via this script indicates that someone tried to resolve the specified DOI, i.e. via https://doi.org/* . DataCite can sometimes be more than a month delayed in updating it's reports - the script is able to handle this.
+The main script in this folder is `dcpidreport.py`, which checks DataCite for DOI resolution and generates reports on failures. Anything reported via this script indicates that someone tried to resolve the specified DOI, i.e. via https://doi.org/* . DataCite can sometimes be more than a month delayed in updating its reports - the script is able to handle this.
 
 A second script, `pidreport.py` performs similar functions for any PIDs. However, it relies on functionality to create an initial PIDFailures report that is not yet merged into the standard Dataverse distribution from https://github.org/IQSS/dataverse.
 The benefit of this message is that the results are available every month and they capture any call to Dataverse requiring a PID (i.e. where someone may have posted a direct, incorrect link to a dataset page, versus DataCite only reporting DOI resolution failures).
