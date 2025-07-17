@@ -39,6 +39,15 @@ In the following sections, you can find a list of available recipes for each lan
 - [Upgrade Dataverse](shell/upgrades)
 - [Testing](shell/testing)
 
+### DVCLI 🛠️
+
+- [Authentication](dvcli/authentication.sh)
+- [Collection Management](dvcli/collections)
+- [Dataset Management](dvcli/datasets)
+- [File Management](dvcli/files)
+- [Search](dvcli/search)
+- [Administration](dvcli/admin)
+
 ## 🤝 Contributing
 
 We welcome contributions! To add a new recipe:

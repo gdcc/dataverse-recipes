@@ -1,0 +1,13 @@
+{
+    "name": "My Collection",
+    "alias": "my_collection",
+    "description": "This collection was created by DVCLI",
+    "dataverseType": "TEACHING_COURSES",
+    "affiliation": "University of Dataverse",
+    "dataverseContacts": [
+        {
+        "contactEmail": "john@doe.com"
+        }
+    ]
+}
+  
