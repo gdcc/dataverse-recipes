@@ -17,5 +17,5 @@ dvcli -p $PROFILE info version
 export DVCLI_TOKEN="<TOKEN>"
 export DVCLI_URL="<URL>"
 
-# Then you can use the token without the profile
+# When you are not using the keychain, be sure to omit `-p $PROFILE` from the commands
 dvcli info version
