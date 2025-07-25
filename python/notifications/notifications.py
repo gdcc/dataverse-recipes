@@ -73,6 +73,7 @@ def main():
         message = "The dataverse, dataset, or file for this notification has been deleted."
         if "messageText" in notification:
             print(notification)
+            type = notification["type"]
             message = notification["messageText"]
             print(f"{message} {notification['sentTimestamp']}")
             print()
@@ -87,14 +88,54 @@ def main():
             #                             </div>"""
             # message = """<a href="/dataverse/pdurbin" title="Philip Durbin Dataverse">Philip Durbin Dataverse</a> was created in <a href="/dataverse/demo" title="Demo Dataverse">Demo Dataverse</a> . To learn more about what you can do with your dataverse, check out the <a href="https://guides.dataverse.org/en/6.7/user/dataverse-management.html" title="Dataverse Management - Dataverse User Guide" target="_blank">User Guide</a>.\
 # """
-            message = """You have been granted the Admin/Dataverse + Dataset Creator role for <a href="/dataverse/root" title="Root">Root</a>.\
-"""
-            print(f"{message} {notification['sentTimestamp']}")
-            print()
+            if type == "ASSIGNROLE":
+                role = "FIXME---Admin/Dataverse + Dataset Creator---FIXME"
+                message = f'You have been granted the {role} role for <a href="/dataverse/root" title="Root">Root</a>.'
+                print(f"{message} {notification['sentTimestamp']}")
+                print()
+            elif type == "SUBMITTEDDS":
+#                 message = """\
+# <a href="/dataset.xhtml?persistentId=doi:10.5072/FK2/Y733KJ&amp;version=DRAFT&amp;faces-redirect=true" title="Darwin's Finches">Darwin's Finches</a> was submitted for review to be published in \
+# <a href="/dataverse/dv085f7b38" title="dv085f7b38">dv085f7b38</a>. Don't forget to publish it or send it back to the contributor, \
+# usercc149b2d usercc149b2d (usercc149b2d@mailinator.com)!\
+# """
+#notification.wasSubmittedForReview={0} was submitted for review to be published in {1}. Don''t forget to publish it or send it back to the contributor, {2} ({3})\!
+
+                dataset_name = notification["datasetName"]
+                submitter_first_name = notification["requestorFirstName"]
+                submitter_last_name = notification["requestorLastName"]
+                submitter_email = notification["requestorEmail"]
+                dataset_relative_url_to_root_with_spa = notification["datasetRelativeUrlToRootWithSpa"]
+                parent_collection_name = notification["parentCollectionName"]
+                parent_collection_relative_url_to_root_with_spa = notification["parentCollectionRelativeUrlToRootWithSpa"]
+                # message = f'<a href="/dataset.xhtml?persistentId=doi:10.5072/FK2/Y733KJ&amp;version=DRAFT&amp;faces-redirect=true" title="Darwin\'s Finches">{dataset_name}</a> was submitted for review to be published in <a href="/dataverse/dv085f7b38" title="dv085f7b38">dv085f7b38</a>. Don\'t forget to publish it or send it back to the contributor, \
+                message = f'<a href="{dataset_relative_url_to_root_with_spa}" title="{dataset_name}">{dataset_name}</a> was submitted for review to be published in <a href="{parent_collection_relative_url_to_root_with_spa}" title="{parent_collection_name}">{parent_collection_name}</a>. Don\'t forget to publish it or send it back to the contributor, \
+{submitter_first_name} {submitter_last_name} ({submitter_email})!'
+                print(f"{message} {notification['sentTimestamp']}")
+                print()
             message = re.sub('<[^<]+?>', '', message)
             print(f"{message} {notification['sentTimestamp']}")
             print()
             print()
+"""
+<ui:fragment rendered="#{item.type == 'SUBMITTEDDS'}">
+    <span class="icon-dataset text-icon-inline text-muted"></span>
+    <h:outputFormat value="#{bundle['notification.wasSubmittedForReview']}" escape="false">
+        <o:param>
+            <a href="/dataset.xhtml?persistentId=#{item.theObject.getDataset().getGlobalId()}&amp;version=DRAFT&amp;faces-redirect=true" title="#{item.theObject.getDataset().getDisplayName()}">#{item.theObject.getDataset().getDisplayName()}</a>
+        </o:param>
+        <o:param>
+            <a href="/dataverse/#{item.theObject.getDataset().getOwner().getAlias()}" title="#{item.theObject.getDataset().getOwner().getDisplayName()}">#{item.theObject.getDataset().getOwner().getDisplayName()}</a>
+        </o:param>
+        <o:param>
+            #{DataverseUserPage.getRequestorName(item)}
+        </o:param>
+        <o:param>
+            #{DataverseUserPage.getRequestorEmail(item)}
+        </o:param>
+    </h:outputFormat>
+</ui:fragment>
+"""
 
 
 def construct_url(base_url):
