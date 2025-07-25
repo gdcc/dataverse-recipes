@@ -101,16 +101,55 @@ def main():
 # """
 #notification.wasSubmittedForReview={0} was submitted for review to be published in {1}. Don''t forget to publish it or send it back to the contributor, {2} ({3})\!
 
-                dataset_name = notification["datasetName"]
-                submitter_first_name = notification["requestorFirstName"]
-                submitter_last_name = notification["requestorLastName"]
-                submitter_email = notification["requestorEmail"]
+                dataset_title = notification["datasetTitle"]
+                requestor_first_name = notification["requestorFirstName"]
+                requestor_last_name = notification["requestorLastName"]
+                requestor_email = notification["requestorEmail"]
                 dataset_relative_url_to_root_with_spa = notification["datasetRelativeUrlToRootWithSpa"]
                 parent_collection_name = notification["parentCollectionName"]
                 parent_collection_relative_url_to_root_with_spa = notification["parentCollectionRelativeUrlToRootWithSpa"]
                 # message = f'<a href="/dataset.xhtml?persistentId=doi:10.5072/FK2/Y733KJ&amp;version=DRAFT&amp;faces-redirect=true" title="Darwin\'s Finches">{dataset_name}</a> was submitted for review to be published in <a href="/dataverse/dv085f7b38" title="dv085f7b38">dv085f7b38</a>. Don\'t forget to publish it or send it back to the contributor, \
-                message = f'<a href="{dataset_relative_url_to_root_with_spa}" title="{dataset_name}">{dataset_name}</a> was submitted for review to be published in <a href="{parent_collection_relative_url_to_root_with_spa}" title="{parent_collection_name}">{parent_collection_name}</a>. Don\'t forget to publish it or send it back to the contributor, \
-{submitter_first_name} {submitter_last_name} ({submitter_email})!'
+                message = f'<a href="{dataset_relative_url_to_root_with_spa}" title="{dataset_title}">{dataset_title}</a> was submitted for review to be published in <a href="{parent_collection_relative_url_to_root_with_spa}" title="{parent_collection_name}">{parent_collection_name}</a>. Don\'t forget to publish it or send it back to the contributor, {requestor_first_name} {requestor_last_name} ({requestor_email})!'
+                print(f"{message} {notification['sentTimestamp']}")
+                print()
+            elif type == "CREATEACC":
+#                  message = """\
+#Welcome to Root! Get started by adding or finding data. Have questions? Check out the 
+#<a href="https://guides.dataverse.org/en/6.7/user/index.html" title="Root User Guide" target="_blank">User Guide</a>. Want to test out Dataverse features? Use our 
+#<a href="https://demo.dataverse.org">Demo Site</a>. Also, check for your welcome email to verify your address.
+# """
+                installation_brand_name = notification["installationBrandName"]
+                user_guide_url = notification["userGuideUrl"]
+                message = f'Welcome to {installation_brand_name}! Get started by adding or finding data. Have questions? Check out the \
+<a href="{user_guide_url}" title="User Guide" target="_blank">User Guide</a>. \
+Want to test out Dataverse features? Use our <a href="https://demo.dataverse.org">Demo Site</a>. \
+Also, check for your welcome email to verify your address.'
+                print(f"{message} {notification['sentTimestamp']}")
+                print()
+            elif type == "REQUESTFILEACCESS":
+                manage_file_permissions_relative_url_to_root_with_spa = notification["manageFilePermissionsRelativeUrlToRootWithSpa"]
+                dataset_title = notification["datasetTitle"]
+                requestor_first_name = notification["requestorFirstName"]
+                requestor_last_name = notification["requestorLastName"]
+                requestor_email = notification["requestorEmail"]
+                message = f'File access requested for dataset: <a href="/permissions-manage-files.xhtml?id=110" title="{dataset_title}">{dataset_title}</a> was made by \
+{requestor_first_name} {requestor_last_name} ({requestor_email}).'
+                print(f"{message} {notification['sentTimestamp']}")
+                print()
+            elif type == "RETURNEDDS":
+                message = """\
+<a href="/dataset.xhtml?persistentId=doi:10.5072/FK2/DR0OKF&amp;version=DRAFT&amp;faces-redirect=true" title="newTitle">newTitle</a> was returned by the curator of \
+<a href="/dataverse/dv9cab5a06" title="dv9cab5a06">dv9cab5a06</a>.
+"""
+                dataset_title = notification["datasetTitle"]
+                dataset_relative_url_to_root_with_spa = notification["datasetRelativeUrlToRootWithSpa"]
+                parent_collection_name = notification["parentCollectionName"]
+                parent_collection_relative_url_to_root_with_spa = notification["parentCollectionRelativeUrlToRootWithSpa"]
+                # message = f'<a href="/dataset.xhtml?persistentId=doi:10.5072/FK2/Y733KJ&amp;version=DRAFT&amp;faces-redirect=true" title="Darwin\'s Finches">{dataset_name}</a> was submitted for review to be published in <a href="/dataverse/dv085f7b38" title="dv085f7b38">dv085f7b38</a>. Don\'t forget to publish it or send it back to the contributor, \
+                # message = f'<a href="{dataset_relative_url_to_root_with_spa}" title="{dataset_name}">{dataset_name}</a> was submitted for review to be published in <a href="{parent_collection_relative_url_to_root_with_spa}" title="{parent_collection_name}">{parent_collection_name}</a>. Don\'t forget to publish it or send it back to the contributor, {requestor_first_name} {requestor_last_name} ({requestor_email})!'
+                # message = f'foo!'
+                message = f'<a href="{dataset_relative_url_to_root_with_spa}" title="{dataset_title}">{dataset_title}</a> was returned by the curator of \
+<a href="{parent_collection_relative_url_to_root_with_spa}" title="{parent_collection_name}">{parent_collection_name}</a>.'
                 print(f"{message} {notification['sentTimestamp']}")
                 print()
             message = re.sub('<[^<]+?>', '', message)
