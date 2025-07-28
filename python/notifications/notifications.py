@@ -113,6 +113,14 @@ Also, check for your welcome email to verify your address.'
                 message = f'Dataset <a href="{dataset_relative_url_to_root_with_spa}" title="{dataset_title}">{dataset_title}</a> has one or more tabular files that completed the <a href="{user_guide_tabular_ingest_url}" title="Tabular Data Files - Dataverse User Guide" target="_blank" rel="noopener">tabular ingest process</a> and are available in archival formats.'
                 print(f"{message} {notification['sentTimestamp']}")
                 print()
+            elif type == "INGESTCOMPLETEDWITHERRORS":
+                # message = 'Dataset <a href="/dataset.xhtml?persistentId=doi:10.5072/FK2/LCWIPF" title="Darwins Finches">Darwins Finches</a> has one or more tabular files that are available but are not supported for <a href="https://guides.dataverse.org/en/6.7/user/dataset-management.html#tabular-data-files" title="Tabular Data Files- Dataverse User Guide" target="_blank" rel="noopener">tabular ingest</a>.'
+                dataset_relative_url_to_root_with_spa = notification["datasetRelativeUrlToRootWithSpa"]
+                dataset_title = notification["datasetTitle"]
+                user_guide_tabular_ingest_url = notification["userGuideTabularIngestUrl"]
+                message = f'Dataset <a href="{dataset_relative_url_to_root_with_spa}" title="{dataset_title}">{dataset_title}</a> has one or more tabular files that are available but are not supported for <a href="{user_guide_tabular_ingest_url}" title="Tabular Data Files- Dataverse User Guide" target="_blank" rel="noopener">tabular ingest</a>.'
+                print(f"{message} {notification['sentTimestamp']}")
+                print()
             elif type == "PUBLISHEDDS":
                 # role = "FIXME---Admin/Dataverse + Dataset Creator---FIXME"
                 # message = f'<a href="/dataset.xhtml?persistentId=doi:10.5072/FK2/1QJC0H&amp;faces-redirect=true" title="newTitle">newTitle</a> was published in <a href="/dataverse/dv765215c5" title="dv765215c5">dv765215c5</a>.'
