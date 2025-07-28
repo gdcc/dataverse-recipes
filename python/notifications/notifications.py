@@ -88,9 +88,38 @@ def main():
             #                             </div>"""
             # message = """<a href="/dataverse/pdurbin" title="Philip Durbin Dataverse">Philip Durbin Dataverse</a> was created in <a href="/dataverse/demo" title="Demo Dataverse">Demo Dataverse</a> . To learn more about what you can do with your dataverse, check out the <a href="https://guides.dataverse.org/en/6.7/user/dataverse-management.html" title="Dataverse Management - Dataverse User Guide" target="_blank">User Guide</a>.\
 # """
-            if type == "ASSIGNROLE":
-                role = "FIXME---Admin/Dataverse + Dataset Creator---FIXME"
-                message = f'You have been granted the {role} role for <a href="/dataverse/root" title="Root">Root</a>.'
+            if type == "CREATEACC":
+#                  message = """\
+#Welcome to Root! Get started by adding or finding data. Have questions? Check out the 
+#<a href="https://guides.dataverse.org/en/6.7/user/index.html" title="Root User Guide" target="_blank">User Guide</a>. Want to test out Dataverse features? Use our 
+#<a href="https://demo.dataverse.org">Demo Site</a>. Also, check for your welcome email to verify your address.
+# """
+                installation_brand_name = notification["installationBrandName"]
+                user_guide_url = notification["userGuideUrl"]
+                message = f'Welcome to {installation_brand_name}! Get started by adding or finding data. Have questions? Check out the \
+<a href="{user_guide_url}" title="User Guide" target="_blank">User Guide</a>. \
+Want to test out Dataverse features? Use our <a href="https://demo.dataverse.org">Demo Site</a>. \
+Also, check for your welcome email to verify your address.'
+                print(f"{message} {notification['sentTimestamp']}")
+                print()
+            elif type == "INGESTCOMPLETED":
+                # role = "FIXME---Admin/Dataverse + Dataset Creator---FIXME"
+                # message = f'You have been granted the {role} role for <a href="/dataverse/root" title="Root">Root</a>.'
+                print(f"{message} {notification['sentTimestamp']}")
+                print()
+            elif type == "PUBLISHEDDS":
+                # role = "FIXME---Admin/Dataverse + Dataset Creator---FIXME"
+                # message = f'You have been granted the {role} role for <a href="/dataverse/root" title="Root">Root</a>.'
+                print(f"{message} {notification['sentTimestamp']}")
+                print()
+            elif type == "REQUESTFILEACCESS":
+                manage_file_permissions_relative_url_to_root_with_spa = notification["manageFilePermissionsRelativeUrlToRootWithSpa"]
+                dataset_title = notification["datasetTitle"]
+                requestor_first_name = notification["requestorFirstName"]
+                requestor_last_name = notification["requestorLastName"]
+                requestor_email = notification["requestorEmail"]
+                message = f'File access requested for dataset: <a href="/permissions-manage-files.xhtml?id=110" title="{dataset_title}">{dataset_title}</a> was made by \
+{requestor_first_name} {requestor_last_name} ({requestor_email}).'
                 print(f"{message} {notification['sentTimestamp']}")
                 print()
             elif type == "SUBMITTEDDS":
@@ -112,30 +141,6 @@ def main():
                 message = f'<a href="{dataset_relative_url_to_root_with_spa}" title="{dataset_title}">{dataset_title}</a> was submitted for review to be published in <a href="{parent_collection_relative_url_to_root_with_spa}" title="{parent_collection_name}">{parent_collection_name}</a>. Don\'t forget to publish it or send it back to the contributor, {requestor_first_name} {requestor_last_name} ({requestor_email})!'
                 print(f"{message} {notification['sentTimestamp']}")
                 print()
-            elif type == "CREATEACC":
-#                  message = """\
-#Welcome to Root! Get started by adding or finding data. Have questions? Check out the 
-#<a href="https://guides.dataverse.org/en/6.7/user/index.html" title="Root User Guide" target="_blank">User Guide</a>. Want to test out Dataverse features? Use our 
-#<a href="https://demo.dataverse.org">Demo Site</a>. Also, check for your welcome email to verify your address.
-# """
-                installation_brand_name = notification["installationBrandName"]
-                user_guide_url = notification["userGuideUrl"]
-                message = f'Welcome to {installation_brand_name}! Get started by adding or finding data. Have questions? Check out the \
-<a href="{user_guide_url}" title="User Guide" target="_blank">User Guide</a>. \
-Want to test out Dataverse features? Use our <a href="https://demo.dataverse.org">Demo Site</a>. \
-Also, check for your welcome email to verify your address.'
-                print(f"{message} {notification['sentTimestamp']}")
-                print()
-            elif type == "REQUESTFILEACCESS":
-                manage_file_permissions_relative_url_to_root_with_spa = notification["manageFilePermissionsRelativeUrlToRootWithSpa"]
-                dataset_title = notification["datasetTitle"]
-                requestor_first_name = notification["requestorFirstName"]
-                requestor_last_name = notification["requestorLastName"]
-                requestor_email = notification["requestorEmail"]
-                message = f'File access requested for dataset: <a href="/permissions-manage-files.xhtml?id=110" title="{dataset_title}">{dataset_title}</a> was made by \
-{requestor_first_name} {requestor_last_name} ({requestor_email}).'
-                print(f"{message} {notification['sentTimestamp']}")
-                print()
             elif type == "RETURNEDDS":
                 message = """\
 <a href="/dataset.xhtml?persistentId=doi:10.5072/FK2/DR0OKF&amp;version=DRAFT&amp;faces-redirect=true" title="newTitle">newTitle</a> was returned by the curator of \
@@ -152,6 +157,13 @@ Also, check for your welcome email to verify your address.'
 <a href="{parent_collection_relative_url_to_root_with_spa}" title="{parent_collection_name}">{parent_collection_name}</a>.'
                 print(f"{message} {notification['sentTimestamp']}")
                 print()
+            elif type == "ASSIGNROLE":
+                role = "FIXME---Admin/Dataverse + Dataset Creator---FIXME"
+                message = f'You have been granted the {role} role for <a href="/dataverse/root" title="Root">Root</a>.'
+                print(f"{message} {notification['sentTimestamp']}")
+                print()
+
+            # print plain text version
             message = re.sub('<[^<]+?>', '', message)
             print(f"{message} {notification['sentTimestamp']}")
             print()
