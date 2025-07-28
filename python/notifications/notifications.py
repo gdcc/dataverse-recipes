@@ -115,7 +115,12 @@ Also, check for your welcome email to verify your address.'
                 print()
             elif type == "PUBLISHEDDS":
                 # role = "FIXME---Admin/Dataverse + Dataset Creator---FIXME"
-                # message = f'You have been granted the {role} role for <a href="/dataverse/root" title="Root">Root</a>.'
+                # message = f'<a href="/dataset.xhtml?persistentId=doi:10.5072/FK2/1QJC0H&amp;faces-redirect=true" title="newTitle">newTitle</a> was published in <a href="/dataverse/dv765215c5" title="dv765215c5">dv765215c5</a>.'
+                dataset_relative_url_to_root_with_spa = notification["datasetRelativeUrlToRootWithSpa"]
+                dataset_title = notification["datasetTitle"]
+                parent_collection_relative_url_to_root_with_spa = notification["parentCollectionRelativeUrlToRootWithSpa"]
+                parent_collection_name = notification["parentCollectionName"]
+                message = f'<a href="{dataset_relative_url_to_root_with_spa}" title="{dataset_title}">{dataset_title}</a> was published in <a href="{parent_collection_relative_url_to_root_with_spa}" title="{parent_collection_name}">{parent_collection_name}</a>.'
                 print(f"{message} {notification['sentTimestamp']}")
                 print()
             elif type == "REQUESTFILEACCESS":
@@ -141,8 +146,8 @@ Also, check for your welcome email to verify your address.'
                 requestor_last_name = notification["requestorLastName"]
                 requestor_email = notification["requestorEmail"]
                 dataset_relative_url_to_root_with_spa = notification["datasetRelativeUrlToRootWithSpa"]
-                parent_collection_name = notification["parentCollectionName"]
                 parent_collection_relative_url_to_root_with_spa = notification["parentCollectionRelativeUrlToRootWithSpa"]
+                parent_collection_name = notification["parentCollectionName"]
                 # message = f'<a href="/dataset.xhtml?persistentId=doi:10.5072/FK2/Y733KJ&amp;version=DRAFT&amp;faces-redirect=true" title="Darwin\'s Finches">{dataset_name}</a> was submitted for review to be published in <a href="/dataverse/dv085f7b38" title="dv085f7b38">dv085f7b38</a>. Don\'t forget to publish it or send it back to the contributor, \
                 message = f'<a href="{dataset_relative_url_to_root_with_spa}" title="{dataset_title}">{dataset_title}</a> was submitted for review to be published in <a href="{parent_collection_relative_url_to_root_with_spa}" title="{parent_collection_name}">{parent_collection_name}</a>. Don\'t forget to publish it or send it back to the contributor, {requestor_first_name} {requestor_last_name} ({requestor_email})!'
                 print(f"{message} {notification['sentTimestamp']}")
