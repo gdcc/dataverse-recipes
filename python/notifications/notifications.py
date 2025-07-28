@@ -103,8 +103,14 @@ Also, check for your welcome email to verify your address.'
                 print(f"{message} {notification['sentTimestamp']}")
                 print()
             elif type == "INGESTCOMPLETED":
-                # role = "FIXME---Admin/Dataverse + Dataset Creator---FIXME"
-                # message = f'You have been granted the {role} role for <a href="/dataverse/root" title="Root">Root</a>.'
+#                 message = """\
+# Dataset <a href="/dataset.xhtml?persistentId=doi:10.5072/FK2/O0NBLT" title="newTitle">newTitle</a> has one or more tabular files that completed the <a href="https://guides.dataverse.org/en/6.7/user/dataset-management.html#tabular-data-files" title="Tabular Data Files - Dataverse User Guide" target="_blank" rel="noopener">tabular ingest process</a> and are available in archival formats.
+#                 """
+                dataset_relative_url_to_root_with_spa = notification["datasetRelativeUrlToRootWithSpa"]
+#<a href="https://guides.dataverse.org/en/6.7/user/dataset-management.html#tabular-data-files" title="Tabular Data Files - Dataverse User Guide" target="_blank" rel="noopener">tabular ingest process</a>
+                dataset_title = notification["datasetTitle"]
+                user_guide_tabular_ingest_url = notification["userGuideTabularIngestUrl"]
+                message = f'Dataset <a href="{dataset_relative_url_to_root_with_spa}" title="{dataset_title}">{dataset_title}</a> has one or more tabular files that completed the <a href="{user_guide_tabular_ingest_url}" title="Tabular Data Files - Dataverse User Guide" target="_blank" rel="noopener">tabular ingest process</a> and are available in archival formats.'
                 print(f"{message} {notification['sentTimestamp']}")
                 print()
             elif type == "PUBLISHEDDS":
