@@ -1,4 +1,5 @@
 #!/bin/bash
+# set -x
 # Used release to generate this: https://github.com/IQSS/dataverse/releases/tag/v6.6
 #
 # IMPORTANT: This script handles "application already registered" errors gracefully.
@@ -31,14 +32,28 @@
 # - NEW: Multiple fallback methods for sudo operations
 # - NEW: Graceful handling of backup directory creation failures
 # - NEW: Enhanced error diagnostics for system configuration issues
+# - CRITICAL FIX: Added fallback custom fields mechanism to prevent "unknown field" errors
+# - CRITICAL FIX: Enhanced schema verification before reindexing
+# - CRITICAL FIX: Automatic detection and addition of missing custom metadata fields
+# - CRITICAL FIX: Improved error handling for Payara crashes during schema updates
+# - CRITICAL FIX: Added automatic Payara restart and recovery when crashes occur during schema updates
+# - CRITICAL FIX: Added forced fallback schema update when Payara crashes prevent normal schema updates
+# - CRITICAL FIX: Added final safety checks before reindexing to ensure Payara is running
+# - CRITICAL FIX: Fixed integer validation issues in schema field counting to prevent syntax errors
+# - CRITICAL FIX: Fixed feature flag configuration to use JVM options instead of API (as per Dataverse 6.6 documentation)
+# - CRITICAL FIX: Enhanced Solr collection recreation with robust verification and automatic collection creation
+# - CRITICAL FIX: Fixed integer validation for schema field counting to prevent syntax errors in comparisons
+# - CRITICAL FIX: Enhanced reindexing verification to handle zero baseline counts properly
+# - CRITICAL FIX: Added new 6.6 fields (versionNote, fileRestricted, canDownloadFile) to fallback schema update
 
-# Get the directory where the script is located
-SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &> /dev/null && pwd)
+# Version information
+TARGET_VERSION="6.6"
+CURRENT_VERSION="6.5"
+PAYARA_VERSION="6.2025.2"
+SOLR_VERSION="9.8.0"
+REQUIRED_JAVA_VERSION="11"
 
-# Logging configuration
-LOGFILE="$SCRIPT_DIR/dataverse_upgrade_6_5_to_6_6.log"
-echo "" > "$LOGFILE"
-STATE_FILE="$SCRIPT_DIR/upgrade_6_5_to_6_6.state"
+# URLs for downloading files
 CITATION_TSV_URL="https://raw.githubusercontent.com/IQSS/dataverse/v6.6/scripts/api/data/metadatablocks/citation.tsv"
 OBJECTS_3D_TSV_URL="https://raw.githubusercontent.com/IQSS/dataverse/v6.6/scripts/api/data/metadatablocks/3d_objects.tsv"
 SOLR_SCHEMA_URL="https://raw.githubusercontent.com/IQSS/dataverse/v6.6/conf/solr/schema.xml"
@@ -46,23 +61,140 @@ SOLR_CONFIG_URL="https://raw.githubusercontent.com/IQSS/dataverse/v6.6/conf/solr
 UPDATE_FIELDS_URL="https://raw.githubusercontent.com/IQSS/dataverse/v6.6/conf/solr/update-fields.sh"
 PAYARA_DOWNLOAD_URL="https://nexus.payara.fish/repository/payara-community/fish/payara/distributions/payara/6.2025.2/payara-6.2025.2.zip"
 DATAVERSE_WAR_URL="https://github.com/IQSS/dataverse/releases/download/v6.6/dataverse-6.6.war"
-TARGET_VERSION="6.6"
-CURRENT_VERSION="6.5"
-PAYARA_VERSION="6.2025.2"
-SOLR_VERSION="9.8.0"
-REQUIRED_JAVA_VERSION="11"
+SOLR_DOWNLOAD_URL="https://archive.apache.org/dist/solr/solr/9.8.0/solr-9.8.0.tgz"
 
 # SHA256 checksums for verification
 PAYARA_SHA256="c06edc1f39903c874decf9615ef641ea18d3f7969d38927c282885960d5ee796"
 DATAVERSE_WAR_SHA256="04206252f9692fe5ffca9ac073161cd52835f607d9387194a4112f91c2176f3d"
 SOLR_SHA256="9948dcf798c196b834c4cbb420d1ea5995479431669d266c33d46548b67e69e1"
+CITATION_TSV_SHA256="82dc4e0480ae9718ce021a0908c8a3ecb40d9918f38c0c7f8f42234460f6ed0e"
+OBJECTS_3D_TSV_SHA256="6e8e714e3a314fef80ca004826d7dd3151279009c45a863ba3b05ee57c52c2bf"
+SOLR_SCHEMA_SHA256="2ff4d76aa6645abb7db5289ade5cff83185a849f790606c90abaa87f8b5020c2"
+SOLR_CONFIG_SHA256="f1b1402d5c5edc9fb5be78d05be86c2e82ae9e7014ec3d1e7cb1801a2b48f2a7"
+UPDATE_FIELDS_SHA256="de66d7baecc60fbe7846da6db104701317949b3a0f1ced5df3d3f6e34b634c7c"
 
-# Solr download URL for 9.8.0
-SOLR_DOWNLOAD_URL="https://archive.apache.org/dist/solr/solr/9.8.0/solr-9.8.0.tgz"
+# Get the directory where the script is located
+SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &> /dev/null && pwd)
+DOWNLOAD_CACHE_DIR="$SCRIPT_DIR/downloads"
+
+# Logging configuration
+LOGFILE="$SCRIPT_DIR/dataverse_upgrade_6_5_to_6_6.log"
+echo "" > "$LOGFILE"
+STATE_FILE="$SCRIPT_DIR/upgrade_6_5_to_6_6.state"
 
 # Function to log and print messages
 log() {
     echo "$(date +"%Y-%m-%d %H:%M:%S") - $1" | tee -a "$LOGFILE"
+}
+
+# Helper function to safely get Solr document count
+get_solr_doc_count() {
+    local response=$(curl -s --max-time 10 "http://localhost:8983/solr/collection1/select?q=*:*&rows=0" 2>/dev/null)
+    if [ -n "$response" ] && echo "$response" | jq . >/dev/null 2>&1; then
+        echo "$response" | jq -r '.response.numFound // 0' 2>/dev/null || echo "0"
+    else
+        echo "0"
+    fi
+}
+
+# Function to download a file with caching and checksum verification
+download_with_cache() {
+    local url="$1"
+    local file_name="$2"
+    local file_description="$3"
+    local expected_sha256="$4"
+    local dest_path="$DOWNLOAD_CACHE_DIR/$file_name"
+
+    log "Handling download for $file_description..."
+
+    # Ensure download cache directory exists
+    if [ ! -d "$DOWNLOAD_CACHE_DIR" ]; then
+        log "Creating download cache directory: $DOWNLOAD_CACHE_DIR"
+        if ! mkdir -p "$DOWNLOAD_CACHE_DIR"; then
+            log "❌ ERROR: Failed to create download cache directory: $DOWNLOAD_CACHE_DIR"
+            return 1
+        fi
+    fi
+
+    # Check if file exists in cache
+    if [ -f "$dest_path" ]; then
+        log "File found in cache: $dest_path"
+        if [ -n "$expected_sha256" ] && [[ "$expected_sha256" != "REPLACE_WITH_OFFICIAL_"* ]]; then
+            log "Verifying checksum of cached file..."
+            if verify_checksum "$dest_path" "$expected_sha256" "$file_description"; then
+                log "✓ Checksum for cached '$file_description' is valid. Skipping download."
+                return 0 # Use cached file
+            else
+                log "✗ Checksum mismatch for cached file. Deleting and re-downloading."
+                rm -f "$dest_path"
+            fi
+        else
+            log "No checksum provided for $file_description. Using cached file as-is."
+            return 0 # Use cached file without verification
+        fi
+    fi
+
+    # Download with retry logic and better error handling
+    log "Downloading $file_description from $url..."
+    local download_success=false
+    local max_retries=3
+    local retry_count=0
+    
+    while [ $retry_count -lt $max_retries ] && [ "$download_success" = false ]; do
+        retry_count=$((retry_count + 1))
+        
+        if [ $retry_count -gt 1 ]; then
+            log "Retry attempt $retry_count of $max_retries for $file_description..."
+        fi
+        
+        # Use wget with better options for reliability
+        if wget --timeout=60 --tries=3 --retry-connrefused --no-verbose -O "$dest_path" "$url" 2>/dev/null; then
+            download_success=true
+            log "✓ Download completed successfully"
+        else
+            log "✗ Download attempt $retry_count failed"
+            rm -f "$dest_path" # Clean up partial download
+            
+            if [ $retry_count -lt $max_retries ]; then
+                log "Waiting 5 seconds before retry..."
+                sleep 5
+            fi
+        fi
+    done
+    
+    if [ "$download_success" = false ]; then
+        log "❌ ERROR: Failed to download $file_description from $url after $max_retries attempts."
+        return 1
+    fi
+
+    # Verify the downloaded file exists and has content
+    if [ ! -f "$dest_path" ] || [ ! -s "$dest_path" ]; then
+        log "❌ ERROR: Downloaded file is missing or empty: $dest_path"
+        rm -f "$dest_path"
+        return 1
+    fi
+
+    # Verify checksum if provided
+    if [ -n "$expected_sha256" ] && [[ "$expected_sha256" != "REPLACE_WITH_OFFICIAL_"* ]]; then
+        if ! verify_checksum "$dest_path" "$expected_sha256" "$file_description"; then
+            log "❌ ERROR: Checksum verification failed for downloaded file."
+            log "❌ CRITICAL: File integrity check failed. This could indicate:"
+            log "   - Network corruption during download"
+            log "   - Security issue (man-in-the-middle attack)"
+            log "   - Outdated checksum in script"
+            log "   - File source has changed"
+            log ""
+            log "Expected checksum: $expected_sha256"
+            log "Actual checksum:   $(sha256sum "$dest_path" | cut -d' ' -f1)"
+            log ""
+            log "Removing corrupted file and exiting for security."
+            rm -f "$dest_path"
+            return 1
+        fi
+    fi
+
+    log "✓ Download of $file_description complete and verified."
+    return 0
 }
 
 # Function to compare version numbers for better error messages
@@ -128,7 +260,7 @@ mark_step_as_complete() {
         if ! "$verification_func"; then
             log "❌ ERROR: Step '$step_name' verification failed!"
             mark_step_as_failed "$step_name"
-            return 1
+            exit 1
         fi
         log "✅ Step '$step_name' verification passed"
     fi
@@ -206,7 +338,7 @@ verify_solr_upgrade() {
         # Wait for Solr to start
         local retries=0
         while [ $retries -lt 30 ]; do
-            if curl -s "http://localhost:8983/solr/admin/cores?action=STATUS" >/dev/null 2>&1; then
+            if curl -s "http://localhost:8983/solr/admin/cores?action=STATUS" 2>/dev/null >/dev/null; then
                 break
             fi
             sleep 2
@@ -254,10 +386,8 @@ verify_schema_update() {
     fi
     
     # Check total field count
-    local total_fields=$(grep -c '<field name=' "$schema_file" 2>/dev/null || echo "0")
-    # Clean the variable to ensure it's a single integer
-    total_fields=$(echo "$total_fields" | tr -d '\n\r\t ' | head -1)
-    if ! [[ "$total_fields" =~ ^[0-9]+$ ]]; then total_fields="0"; fi
+    local total_fields
+    total_fields=$(grep -c '<field name=' "$schema_file") || total_fields=0
     
     log "Schema contains $total_fields total field definitions"
     
@@ -267,10 +397,8 @@ verify_schema_update() {
     fi
     
     # Check for custom field presence (but don't fail if missing)
-    local custom_fields=$(grep -c "swContributorName\|dataContext\|computationalworkflow" "$schema_file" 2>/dev/null || echo "0")
-    # Clean the variable to ensure it's a single integer
-    custom_fields=$(echo "$custom_fields" | tr -d '\n\r\t ' | head -1)
-    if ! [[ "$custom_fields" =~ ^[0-9]+$ ]]; then custom_fields="0"; fi
+    local custom_fields
+    custom_fields=$(grep -c "swContributorName\|dataContext\|computationalworkflow\|swInputOutputDescription" "$schema_file") || custom_fields=0
     
     if [ "$custom_fields" -gt 0 ]; then
         log "✓ Custom metadata fields found in schema: $custom_fields fields"
@@ -302,10 +430,32 @@ verify_reindexing() {
     log "Verifying Solr reindexing progress..."
     
     # Check if index has content
-    local index_doc_count=$(curl -s "http://localhost:8983/solr/collection1/select?q=*:*&rows=0" 2>/dev/null | jq -r '.response.numFound' 2>/dev/null || echo "0")
+    local index_doc_count=$(get_solr_doc_count)
+    # Check if index_doc_count is a number
+    if ! [[ "$index_doc_count" =~ ^[0-9]+$ ]]; then
+        log "✗ Reindexing verification failed: $index_doc_count is not a number"
+        return 1
+    fi
     
     # Use pre-Solr-upgrade count if available (more accurate), otherwise fall back to original baseline
-    local baseline_count=$(jq -r '.pre_solr_upgrade_count // .pre_upgrade_index_count' "$SCRIPT_DIR/baseline_metrics.json" 2>/dev/null || echo "1000")
+    local baseline_count=$(jq -r '.pre_solr_upgrade_count // .pre_upgrade_index_count' "$SCRIPT_DIR/baseline_metrics.json" || echo "1000")
+    # Check if baseline_count is a number
+    if ! [[ "$baseline_count" =~ ^[0-9]+$ ]]; then
+        log "✗ Reindexing verification failed: $baseline_count is not a number"
+        return 1
+    fi
+    
+    # Handle case where baseline is 0 (index was cleared before baseline capture)
+    if [ "$baseline_count" -eq 0 ]; then
+        log "⚠️ Baseline count is 0 (index was cleared before baseline capture)"
+        log "Using original pre-upgrade count for verification..."
+        baseline_count=$(jq -r '.pre_upgrade_index_count' "$SCRIPT_DIR/baseline_metrics.json" || echo "1000")
+        if ! [[ "$baseline_count" =~ ^[0-9]+$ ]]; then
+            log "✗ Reindexing verification failed: baseline count is not a valid number"
+            return 1
+        fi
+        log "Using original baseline: $baseline_count documents"
+    fi
     
     # More lenient verification - allow for ongoing indexing
     local min_threshold=$((baseline_count * 5 / 100))  # Only require 5% initially
@@ -350,7 +500,12 @@ verify_deployment() {
     log "Verifying Dataverse deployment..."
     
     # Check version
-    local version=$(curl -s "http://localhost:8080/api/info/version" 2>/dev/null | jq -r '.data.version' 2>/dev/null || echo "unknown")
+    local version=$(curl -s "http://localhost:8080/api/info/version" 2>/dev/null | jq -r '.data.version' || echo "unknown")
+    # Check if version is a valid version number
+    if ! [[ "$version" =~ ^[0-9]+\.[0-9]+(\.[0-9]+)?$ ]]; then
+        log "✗ Deployment verification failed: $version is not a valid version number"
+        return 1
+    fi
     if [[ "$version" == *"$TARGET_VERSION"* ]]; then
         log "✓ Deployment verified: version $version"
         return 0
@@ -501,7 +656,6 @@ cleanup_on_exit() {
 }
 
 # Trap errors and exit
-trap 'echo "An error occurred. Cleanup has been skipped for debugging purposes."' ERR
 trap cleanup_on_exit EXIT
 
 # Function to verify SHA256 checksum
@@ -622,7 +776,7 @@ run_preflight_checks() {
     
     # Check network connectivity for downloads
     log "Checking network connectivity..."
-    if ! curl -s --max-time 10 "https://github.com" > /dev/null 2>&1; then
+    if ! curl -s --max-time 10 "https://github.com" 2>/dev/null > /dev/null; then
         preflight_warnings+=("Network connectivity issues detected")
     fi
     
@@ -783,24 +937,37 @@ robust_sudo_execute() {
     local command="$1"
     local description="${2:-command}"
     local output_file="${3:-/dev/null}"
-    
+
     # Method 1: Standard sudo
-    if sudo $command > "$output_file" 2>&1; then
+    if [ -z "$output_file" ]; then
+        if sudo $command; then
+            log "✓ Executed $description with sudo Method 1"
+            log "  Ran: sudo $command"
+            return 0
+        fi
+    fi
+
+    # Method 2: sudo with bash -c
+    if sudo bash -c "$command" > "$output_file"; then
+        log "✓ Executed $description with sudo Method 2"
         return 0
     fi
-    
+        
     # Method 2: sudo with bash -c
-    if sudo bash -c "$command" > "$output_file" 2>&1; then
+    if sudo bash -c "$command" > "$output_file"; then
+        log "✓ Executed $description with sudo Method 2"
         return 0
     fi
     
     # Method 3: sudo with HOME flag (for LDAP/SSSD)
-    if sudo -H bash -c "$command" > "$output_file" 2>&1; then
+    if sudo -H bash -c "$command" > "$output_file"; then
+        log "✓ Executed $description with sudo Method 3"
         return 0
     fi
     
     # Method 4: sudo with shell flag (for LDAP/SSSD)
-    if sudo -s bash -c "$command" > "$output_file" 2>&1; then
+    if sudo -s bash -c "$command" > "$output_file"; then
+        log "✓ Executed $description with sudo Method 4"
         return 0
     fi
     
@@ -836,6 +1003,13 @@ robust_mkdir() {
     # Try multiple methods to create directory
     if robust_sudo_execute "mkdir -p '$dir_path'" "create $description"; then
         log "✓ Created $description: $dir_path"
+        # Check the output folder exists
+        if [ -d "$dir_path" ]; then
+            log "✓ Output folder exists: $dir_path"
+        else
+            log "❌ ERROR: Output folder does not exist: $dir_path"
+            return 1
+        fi
         return 0
     else
         log "❌ ERROR: Failed to create $description: $dir_path"
@@ -849,11 +1023,83 @@ robust_copy() {
     local dest="$2"
     local description="${3:-file}"
     
-    if robust_sudo_execute "cp -r '$source' '$dest'" "copy $description"; then
-        log "✓ Copied $description: $source -> $dest"
-        return 0
+    # Ensure source exists
+    if [ ! -e "$source" ]; then
+        log "❌ ERROR: Source does not exist: $source"
+        return 1
+    fi
+    
+    # Ensure destination directory exists
+    local dest_dir="$dest"
+    if [ ! -d "$dest" ]; then
+        dest_dir="$(dirname "$dest")"
+    fi
+    
+    if [ ! -d "$dest_dir" ]; then
+        log "Creating destination directory: $dest_dir"
+        if ! robust_mkdir "$dest_dir" "destination directory for $description"; then
+            log "❌ ERROR: Failed to create destination directory: $dest_dir"
+            return 1
+        fi
+    fi
+    
+    # Try multiple copy methods with better error handling
+    local copy_success=false
+    echo ""
+    log "Copying $description: $source -> $dest"
+    
+    if sudo rsync -av "$source" "$dest" 2>/dev/null; then
+        log "rsync -av $source $dest"
+        copy_success=true
+        log "✓ Copied $description using rsync: $source -> $dest"
     else
-        log "❌ ERROR: Failed to copy $description: $source -> $dest"
+        log "Standard copy methods failed. Attempting temporary intermediate copy..."
+        local temp_copy="/tmp/dataverse_backup_temp_$(date +%s)"
+        
+        # First copy to temp location as current user if possible, then sudo move
+        if sudo cp -r "$source" "$temp_copy" 2>/dev/null; then
+            if sudo mv "$temp_copy" "$dest/" 2>/dev/null; then
+                copy_success=true
+                log "✓ Copied $description using temp intermediate: $source -> $dest"
+            else
+                rm -rf "$temp_copy" 2>/dev/null || true
+            fi
+        # If that fails, try with sudo for both steps
+        elif sudo cp -r "$source" "$temp_copy" 2>/dev/null && sudo mv "$temp_copy" "$dest/" 2>/dev/null; then
+            copy_success=true
+            log "✓ Copied $description using sudo temp intermediate: $source -> $dest"
+        else
+            # Clean up any failed temp copy
+            sudo rm -rf "$temp_copy" 2>/dev/null || true
+        fi
+    fi
+    
+    if [ "$copy_success" = true ]; then
+        # Verify the copy was successful
+        local source_name=$(basename "$source")
+        local expected_dest
+        if [ -d "$dest" ]; then
+            expected_dest="$dest/$source_name"
+        else
+            expected_dest="$dest"
+        fi
+        
+        if [ -e "$expected_dest" ]; then
+            log "✓ Backup verification: $expected_dest exists"
+            return 0
+        else
+            log "❌ ERROR: Backup verification failed - destination not found: $expected_dest"
+            return 1
+        fi
+    else
+        log "❌ ERROR: Failed to copy $description with all methods: $source -> $dest"
+        log "Debug info:"
+        log "  Source exists: $([ -e "$source" ] && echo "yes" || echo "no")"
+        log "  Source permissions: $(ls -ld "$source" 2>/dev/null || echo "unknown")"
+        log "  Dest dir exists: $([ -d "$dest_dir" ] && echo "yes" || echo "no")"
+        log "  Dest dir permissions: $(ls -ld "$dest_dir" 2>/dev/null || echo "unknown")"
+        log "  Current user: $(whoami)"
+        log "  Effective UID: $(id -u)"
         return 1
     fi
 }
@@ -987,6 +1233,17 @@ analyze_deployment_output() {
         "PSQLException.*already exists"
         "application.*already registered"
         "application with name.*already registered"
+        "PER01003.*Deployment encountered SQL Exceptions"
+        "PER01000.*ERROR: relation.*already exists"
+        "PER01000.*ERROR: constraint.*already exists"
+        "PER01000.*ERROR: index.*already exists"
+        "PER01000.*ERROR: sequence.*already exists"
+        "PER01000.*ERROR: table.*already exists"
+        "PER01000.*PSQLException: ERROR: relation.*already exists"
+        "PER01000.*PSQLException: ERROR: constraint.*already exists"
+        "PER01000.*PSQLException: ERROR: index.*already exists"
+        "PER01000.*PSQLException: ERROR: sequence.*already exists"
+        "PER01000.*PSQLException: ERROR: table.*already exists"
     )
     
     # Fatal error patterns that should cause failure
@@ -1244,7 +1501,7 @@ resolve_mixed_state() {
     # Get API version if available
     local api_version=""
     if curl -s -f "http://localhost:8080/api/info/version" &> /dev/null; then
-        api_version=$(curl -s "http://localhost:8080/api/info/version" | jq -r '.data.version' 2>/dev/null || echo "unknown")
+        api_version=$(curl -s "http://localhost:8080/api/info/version" 2>/dev/null | jq -r '.data.version' 2>/dev/null || echo "unknown")
     fi
     
     log "Deployed applications: $deployed_apps"
@@ -1337,7 +1594,12 @@ check_current_version() {
     fi
 
     # If no such message, check the Dataverse version via the API
-    version=$(curl -s "http://localhost:8080/api/info/version" | grep -o '"version":"[^"]*"' | sed 's/"version":"//;s/"//')
+    version=$(curl -s "http://localhost:8080/api/info/version" 2>/dev/null | jq -r '.data.version' 2>/dev/null || echo "")
+    # Check if version is a valid version number
+    if ! [[ "$version" =~ ^[0-9]+\.[0-9]+(\.[0-9]+)?$ ]]; then
+        log "✗ Deployment verification failed: $version is not a valid version number"
+        return 1
+    fi
 
     # Handle different version scenarios
     if [[ -n "$version" ]]; then
@@ -1451,11 +1713,11 @@ validate_payara_health() {
         fi
         
         # Check if asadmin commands work
-        if sudo -u "$DATAVERSE_USER" $PAYARA/bin/asadmin list-applications > /dev/null 2>&1; then
+        if sudo -u "$DATAVERSE_USER" $PAYARA/bin/asadmin list-applications 2> /dev/null; then
             log "✓ Payara is responding to asadmin commands"
             
             # Additional health check: verify domain is accessible
-            if sudo -u "$DATAVERSE_USER" $PAYARA/bin/asadmin list-domains > /dev/null 2>&1; then
+            if sudo -u "$DATAVERSE_USER" $PAYARA/bin/asadmin list-domains 2> /dev/null; then
                 log "✓ Payara domain is accessible"
                 return 0
             fi
@@ -1481,8 +1743,8 @@ validate_dataverse_api() {
     
     while [ $counter -lt $max_wait ]; do
         # Check API version endpoint
-        if curl -s --max-time 10 "http://localhost:8080/api/info/version" > /dev/null 2>&1; then
-            local api_version=$(curl -s "http://localhost:8080/api/info/version" | jq -r '.data.version' 2>/dev/null || echo "unknown")
+        if curl -s --max-time 10 "http://localhost:8080/api/info/version" > /dev/null; then
+            local api_version=$(curl -s "http://localhost:8080/api/info/version" 2>/dev/null | jq -r '.data.version' || echo "unknown")
             log "✓ Dataverse API is accessible (version: $api_version)"
             return 0
         fi
@@ -1509,7 +1771,7 @@ validate_solr_health() {
         # Check if Solr process is running
         if pgrep -f "solr" > /dev/null; then
             # Check if Solr is responding
-            if curl -s --max-time 10 "http://localhost:8983/solr/admin/cores" > /dev/null 2>&1; then
+            if curl -s --max-time 10 "http://localhost:8983/solr/admin/cores" > /dev/null; then
                 log "✓ Solr is running and accessible"
                 return 0
             fi
@@ -1632,7 +1894,7 @@ undeploy_dataverse() {
     log "Checking for deployed Dataverse applications..."
     
     # Check for any version of dataverse that might be deployed
-    local deployed_apps=$(sudo -u "$DATAVERSE_USER" $PAYARA/bin/asadmin list-applications 2>&1 | tee -a "$LOGFILE")
+    local deployed_apps=$(sudo -u "$DATAVERSE_USER" "$PAYARA/bin/asadmin" list-applications 2>&1 | tee -a "$LOGFILE")
     
     # Undeploy any dataverse applications found
     if echo "$deployed_apps" | grep -q "dataverse-"; then
@@ -1641,7 +1903,7 @@ undeploy_dataverse() {
         # Try to undeploy the current version first
         if echo "$deployed_apps" | grep -q "dataverse-$CURRENT_VERSION"; then
             log "Undeploying dataverse-$CURRENT_VERSION..."
-            if sudo -u "$DATAVERSE_USER" $PAYARA/bin/asadmin undeploy dataverse-$CURRENT_VERSION 2>&1 | tee -a "$LOGFILE"; then
+            if sudo -u "$DATAVERSE_USER" "$PAYARA/bin/asadmin" undeploy dataverse-$CURRENT_VERSION 2>&1 | tee -a "$LOGFILE"; then
                 log "Undeploy of dataverse-$CURRENT_VERSION completed successfully."
             else
                 log "WARNING: Standard undeploy of dataverse-$CURRENT_VERSION failed. Continuing with recovery."
@@ -1651,7 +1913,7 @@ undeploy_dataverse() {
         # Also try to undeploy the target version in case it was partially deployed
         if echo "$deployed_apps" | grep -q "dataverse-$TARGET_VERSION"; then
             log "Found partially deployed dataverse-$TARGET_VERSION. Attempting to undeploy..."
-            if sudo -u "$DATAVERSE_USER" $PAYARA/bin/asadmin undeploy dataverse-$TARGET_VERSION 2>&1 | tee -a "$LOGFILE"; then
+            if sudo -u "$DATAVERSE_USER" "$PAYARA/bin/asadmin" undeploy dataverse-$TARGET_VERSION 2>&1 | tee -a "$LOGFILE"; then
                 log "Undeploy of dataverse-$TARGET_VERSION completed successfully."
             else
                 log "WARNING: Failed to undeploy dataverse-$TARGET_VERSION. Will clean up manually."
@@ -1664,13 +1926,13 @@ undeploy_dataverse() {
                 local app_name=$(echo "$app_line" | awk '{print $1}')
                 if [[ "$app_name" =~ ^dataverse- ]]; then
                     log "Force undeploying remaining application: $app_name"
-                    sudo -u "$DATAVERSE_USER" $PAYARA/bin/asadmin undeploy "$app_name" 2>&1 | tee -a "$LOGFILE" || true
+                    sudo -u "$DATAVERSE_USER" "$PAYARA/bin/asadmin" undeploy "$app_name" 2>&1 | tee -a "$LOGFILE" || true
                 fi
             fi
         done < <(echo "$deployed_apps")
         
         # Verify no dataverse applications remain
-        local remaining_apps=$(sudo -u "$DATAVERSE_USER" $PAYARA/bin/asadmin list-applications 2>/dev/null)
+        local remaining_apps=$(sudo -u "$DATAVERSE_USER" "$PAYARA/bin/asadmin" list-applications 2>/dev/null)
         if echo "$remaining_apps" | grep -q "dataverse-"; then
             log "WARNING: Some Dataverse applications may still be deployed. Will clean up in application state clearing step."
         else
@@ -1719,7 +1981,7 @@ undeploy_dataverse() {
         log "Waiting for Payara to fully initialize..."
         local retries=0
         while [ $retries -lt 12 ]; do
-            if sudo -u "$DATAVERSE_USER" $PAYARA/bin/asadmin list-applications >/dev/null 2>&1; then
+            if sudo -u "$DATAVERSE_USER" "$PAYARA/bin/asadmin" list-applications >/dev/null 2>&1; then
                 break
             fi
             sleep 10
@@ -1728,14 +1990,14 @@ undeploy_dataverse() {
         done
         
         # Try undeploy again
-        if sudo -u "$DATAVERSE_USER" $PAYARA/bin/asadmin undeploy dataverse-$CURRENT_VERSION; then
+        if sudo -u "$DATAVERSE_USER" "$PAYARA/bin/asadmin" undeploy dataverse-$CURRENT_VERSION; then
             log "Recovery Method 1 successful: Undeploy completed after restart."
             return 0
         fi
         
         # Recovery Method 2: Force undeploy with --cascade option
         log "Recovery Method 2: Attempting force undeploy with cascade..."
-        if sudo -u "$DATAVERSE_USER" $PAYARA/bin/asadmin undeploy --cascade=true dataverse-$CURRENT_VERSION; then
+        if sudo -u "$DATAVERSE_USER" "$PAYARA/bin/asadmin" undeploy --cascade=true dataverse-$CURRENT_VERSION; then
             log "Recovery Method 2 successful: Force undeploy completed."
             return 0
         fi
@@ -1757,7 +2019,7 @@ undeploy_dataverse() {
         fi
         
         # Final verification
-        if sudo -u "$DATAVERSE_USER" $PAYARA/bin/asadmin list-applications | grep -q "dataverse-$CURRENT_VERSION"; then
+        if sudo -u "$DATAVERSE_USER" "$PAYARA/bin/asadmin" list-applications | grep -q "dataverse-$CURRENT_VERSION"; then
             log "WARNING: Application still appears in list-applications output."
             log "This may not prevent the upgrade from continuing, but manual cleanup may be needed."
             log "Continuing with upgrade process..."
@@ -1799,27 +2061,67 @@ backup_payara_domain() {
             robust_mkdir "$BACKUP_DIR/glassfish/domains" "backup subdirectories" || log "WARNING: Failed to create subdirectories, but continuing..."
         else
             log "❌ ERROR: Unable to create backup directory with any method"
-            log "This may be due to user resolution issues in sudo"
-            log "Attempting to continue without backup (WARNING: No rollback possible)"
-            log "Consider creating backup manually: sudo mkdir -p '$BACKUP_DIR'"
-            
-            # Don't fail the entire upgrade for backup issues
-            log "⚠ WARNING: Continuing without Payara backup - manual intervention may be needed for rollback"
-            return 0
+            log "❌ CRITICAL: Backup directory is essential for safe upgrade operations"
+            log ""
+            log "🔧 TROUBLESHOOTING STEPS:"
+            log "  1. Check disk space: df -h $(dirname '$BACKUP_DIR')"
+            log "  2. Check parent directory permissions: ls -ld $(dirname '$BACKUP_DIR')"
+            log "  3. Verify sudo access: sudo -l"
+            log "  4. Try manual creation: sudo mkdir -p '$BACKUP_DIR'"
+            log "  5. Check for filesystem issues: dmesg | tail -20"
+            log ""
+            log "Upgrade aborted for safety. Please resolve backup directory issues and retry."
+            exit 1
         fi
     fi
     
     # Copy domain configuration to backup
     if [ ! -d "$BACKUP_DIR/glassfish/domains/domain1" ]; then
         log "Backing up domain1 configuration..."
+        robust_mkdir "$BACKUP_DIR" "backup parent directory" || log "WARNING: Failed to create backup parent directory, but continuing..."
         if robust_copy "$PAYARA/glassfish/domains/domain1" "$BACKUP_DIR/glassfish/domains/" "domain1 configuration"; then
             log "✓ Domain backup created successfully at: $BACKUP_DIR/glassfish/domains/domain1"
+            
+            # Validate backup integrity
+            if [ -d "$BACKUP_DIR/glassfish/domains/domain1/config" ] && [ -f "$BACKUP_DIR/glassfish/domains/domain1/config/domain.xml" ]; then
+                log "✓ Backup validation: Critical configuration files verified"
+            else
+                log "❌ ERROR: Backup validation failed - critical files missing"
+                log "❌ CRITICAL: Cannot proceed with upgrade without valid backup"
+                log "Please resolve backup issues and run the script again."
+                exit 1
+            fi
         else
             log "❌ ERROR: Failed to backup domain1 configuration"
-            log "⚠ WARNING: Continuing without backup - manual intervention may be needed for rollback"
+            log "❌ CRITICAL: Backup is essential for safe upgrade operations"
+            log "❌ Without backup, rollback is impossible if upgrade fails"
+            log ""
+            log "🔧 TROUBLESHOOTING STEPS:"
+            log "  1. Check disk space: df -h $(dirname '$BACKUP_DIR')"
+            log "  2. Check permissions: ls -ld '$PAYARA/glassfish/domains/domain1'"
+            log "  3. Verify sudo access: sudo -l"
+            log "  4. Try manual backup: sudo cp -r '$PAYARA/glassfish/domains/domain1' '$BACKUP_DIR/glassfish/domains/'"
+            log ""
+            log "Upgrade aborted for safety. Please resolve backup issues and retry."
+            exit 1
         fi
     else
-        log "Domain backup already exists. Skipping backup creation."
+        log "Domain backup already exists. Verifying backup integrity..."
+        if [ -d "$BACKUP_DIR/glassfish/domains/domain1/config" ] && [ -f "$BACKUP_DIR/glassfish/domains/domain1/config/domain.xml" ]; then
+            log "✓ Existing backup validation: Critical configuration files verified"
+        else
+            log "❌ ERROR: Existing backup appears incomplete or corrupted"
+            log "Removing incomplete backup and creating fresh one..."
+            sudo rm -rf "$BACKUP_DIR/glassfish/domains/domain1" || true
+            
+            if robust_copy "$PAYARA/glassfish/domains/domain1" "$BACKUP_DIR/glassfish/domains/" "domain1 configuration"; then
+                log "✓ Fresh backup created successfully"
+            else
+                log "❌ ERROR: Failed to create fresh backup"
+                log "❌ CRITICAL: Cannot proceed without valid backup"
+                exit 1
+            fi
+        fi
     fi
 }
 
@@ -1965,14 +2267,14 @@ upgrade_payara() {
         check_error "Failed to handle current Payara installation"
     fi
     
-    # Download new Payara version
+    # Download new Payara version with caching
     log "Downloading Payara $PAYARA_VERSION..."
-    wget -O "payara-${PAYARA_VERSION}.zip" "$PAYARA_DOWNLOAD_URL"
-    check_error "Failed to download Payara $PAYARA_VERSION"
+    if ! download_with_cache "$PAYARA_DOWNLOAD_URL" "payara-${PAYARA_VERSION}.zip" "Payara $PAYARA_VERSION" "$PAYARA_SHA256"; then
+        check_error "Failed to download Payara $PAYARA_VERSION"
+    fi
     
-    # Verify checksum
-    verify_checksum "payara-${PAYARA_VERSION}.zip" "$PAYARA_SHA256" "Payara $PAYARA_VERSION"
-    check_error "Payara $PAYARA_VERSION checksum verification failed"
+    # Move cached file to current directory for extraction
+    cp "$DOWNLOAD_CACHE_DIR/payara-${PAYARA_VERSION}.zip" "payara-${PAYARA_VERSION}.zip"
     
     # Extract to /usr/local
     log "Extracting Payara to /usr/local..."
@@ -2052,14 +2354,13 @@ download_dataverse_war() {
     TMP_DIR=$(mktemp -d)
     cd "$TMP_DIR"
     
-    wget -O "dataverse-${TARGET_VERSION}.war" "$DATAVERSE_WAR_URL"
-    check_error "Failed to download Dataverse WAR file"
+    # Download with caching
+    if ! download_with_cache "$DATAVERSE_WAR_URL" "dataverse-${TARGET_VERSION}.war" "Dataverse $TARGET_VERSION WAR" "$DATAVERSE_WAR_SHA256"; then
+        check_error "Failed to download Dataverse WAR file"
+    fi
     
-    # Verify checksum
-    verify_checksum "dataverse-${TARGET_VERSION}.war" "$DATAVERSE_WAR_SHA256" "Dataverse $TARGET_VERSION WAR"
-    check_error "Dataverse $TARGET_VERSION WAR checksum verification failed"
-    
-    # Move to a standard location
+    # Move cached file to current directory and then to standard location
+    cp "$DOWNLOAD_CACHE_DIR/dataverse-${TARGET_VERSION}.war" "dataverse-${TARGET_VERSION}.war"
     sudo mv "dataverse-${TARGET_VERSION}.war" "$WAR_FILE_LOCATION/dataverse-${TARGET_VERSION}.war"
     check_error "Failed to move WAR file"
     
@@ -2071,10 +2372,15 @@ download_dataverse_war() {
 
 deploy_dataverse() {
     log "Deploying Dataverse $TARGET_VERSION..."
-    log "Running command: sudo -u $DATAVERSE_USER $PAYARA/bin/asadmin deploy $WAR_FILE_LOCATION/dataverse-${TARGET_VERSION}.war"
+    
+    # First, ensure we have a clean deployment state
+    log "Preparing clean deployment state..."
+    prepare_clean_deployment_state
     
     # Create temporary file to capture deployment output for analysis
     local deploy_output_file=$(mktemp)
+    
+    log "Running command: sudo -u $DATAVERSE_USER $PAYARA/bin/asadmin deploy $WAR_FILE_LOCATION/dataverse-${TARGET_VERSION}.war"
     
     # Capture the deployment output to both log file and temp file for analysis
     if sudo -u "$DATAVERSE_USER" $PAYARA/bin/asadmin deploy "$WAR_FILE_LOCATION/dataverse-${TARGET_VERSION}.war" 2>&1 | tee -a "$LOGFILE" > "$deploy_output_file"; then
@@ -2095,7 +2401,7 @@ deploy_dataverse() {
             fi
         else
             log "📊 Deployment encountered database schema conflicts (expected during upgrades)"
-    log "🔄 Initiating automatic recovery process..."
+            log "🔄 Initiating automatic recovery process..."
         fi
     else
         # Check if this is an "already registered" case, which often means the app is actually working
@@ -2135,21 +2441,29 @@ deploy_dataverse() {
         fi
     fi
     
-    # Recovery steps
+    # Recovery steps with enhanced database schema conflict handling
+    log "🔄 Initiating enhanced recovery process for database schema conflicts..."
+    
     log "Stopping Payara service..."
     sudo systemctl stop payara 2>&1 | tee -a "$LOGFILE"
     
-    log "Cleaning up cached files..."
+    log "Performing comprehensive cleanup to resolve database schema conflicts..."
     sudo rm -rf "$PAYARA/glassfish/domains/domain1/generated" 2>&1 | tee -a "$LOGFILE"
     sudo rm -rf "$PAYARA/glassfish/domains/domain1/osgi-cache" 2>&1 | tee -a "$LOGFILE"
     sudo rm -rf "$PAYARA/glassfish/domains/domain1/lib/databases" 2>&1 | tee -a "$LOGFILE"
     
-    log "Starting Payara service..."
+    # Additional cleanup for deployment artifacts that might cause schema conflicts
+    log "Clearing deployment artifacts and application caches..."
+    sudo rm -rf "$PAYARA/glassfish/domains/domain1/applications/__internal" 2>/dev/null || true
+    sudo rm -rf "$PAYARA/glassfish/domains/domain1/applications/.dataverse*" 2>/dev/null || true
+    sudo rm -rf "$PAYARA/glassfish/domains/domain1/applications/dataverse*" 2>/dev/null || true
+    
+    log "Starting Payara service with clean state..."
     sudo systemctl start payara 2>&1 | tee -a "$LOGFILE"
     
-    # Wait for startup
-    log "Waiting 60 seconds for Payara to fully start and begin database migrations..."
-    sleep 60
+    # Wait for startup with extended time for database migrations
+    log "Waiting 90 seconds for Payara to fully start and complete database migrations..."
+    sleep 90
     
     # Retry deployment with analysis
     log "Retrying deployment..."
@@ -2173,8 +2487,18 @@ deploy_dataverse() {
                 return 0
             else
                 log "❌ ERROR: Failed to verify Dataverse deployment after recovery attempt."
-                rm -f "$deploy_output_file" "$retry_output_file"
-                return 1
+                log "🔄 Attempting final recovery with forced clean deployment..."
+                
+                # Final recovery attempt with forced clean deployment
+                if attempt_forced_clean_deployment; then
+                    log "✅ Forced clean deployment successful!"
+                    rm -f "$deploy_output_file" "$retry_output_file"
+                    return 0
+                else
+                    log "❌ ERROR: All deployment recovery attempts failed."
+                    rm -f "$deploy_output_file" "$retry_output_file"
+                    return 1
+                fi
             fi
         else
             log "❌ ERROR: Failed to deploy Dataverse after recovery attempt with non-benign errors."
@@ -2186,6 +2510,65 @@ deploy_dataverse() {
         rm -f "$deploy_output_file" "$retry_output_file"
         return 1
     fi
+}
+
+# Function to prepare a clean deployment state to avoid database schema conflicts
+prepare_clean_deployment_state() {
+    log "Preparing clean deployment state to avoid database schema conflicts..."
+    
+    # Stop Payara to ensure clean state
+    log "Stopping Payara service for clean deployment..."
+    sudo systemctl stop payara 2>&1 | tee -a "$LOGFILE"
+    
+    # Clear all cached files that might hold old entity mappings and cause schema conflicts
+    log "Removing cached application files and deployment artifacts..."
+    sudo rm -rf "$PAYARA/glassfish/domains/domain1/generated" 2>/dev/null || true
+    sudo rm -rf "$PAYARA/glassfish/domains/domain1/osgi-cache" 2>/dev/null || true
+    sudo rm -rf "$PAYARA/glassfish/domains/domain1/lib/databases" 2>/dev/null || true
+    sudo rm -rf "$PAYARA/glassfish/domains/domain1/applications/__internal" 2>/dev/null || true
+    
+    # Clear any remaining deployed applications to prevent conflicts
+    log "Ensuring all old applications are completely removed..."
+    sudo rm -rf "$PAYARA/glassfish/domains/domain1/applications/dataverse-$CURRENT_VERSION" 2>/dev/null || true
+    sudo rm -rf "$PAYARA/glassfish/domains/domain1/applications/dataverse-$TARGET_VERSION" 2>/dev/null || true
+    
+    # Clear deployment artifacts that might cause schema conflicts
+    log "Clearing deployment artifacts and temporary files..."
+    sudo rm -rf "$PAYARA/glassfish/domains/domain1/applications/.dataverse*" 2>/dev/null || true
+    sudo rm -rf "$PAYARA/glassfish/domains/domain1/applications/dataverse*" 2>/dev/null || true
+    
+    # Start Payara with clean state
+    log "Starting Payara with clean application state..."
+    if ! sudo systemctl start payara 2>&1 | tee -a "$LOGFILE"; then
+        log "❌ ERROR: Failed to start Payara service"
+        log "Checking service status for more details..."
+        sudo systemctl status payara --no-pager 2>&1 | tee -a "$LOGFILE"
+        return 1
+    fi
+    
+    # Wait for startup and verify Payara is responding
+    log "Waiting for Payara to fully start..."
+    sleep 30
+    
+    # Verify Payara is responding before proceeding
+    local counter=0
+    while [ $counter -lt 60 ]; do
+        if sudo -u "$DATAVERSE_USER" $PAYARA/bin/asadmin list-applications >/dev/null 2>&1; then
+            log "Payara is responding to asadmin commands."
+            break
+        fi
+        sleep 5
+        counter=$((counter + 5))
+    done
+    
+    if [ $counter -ge 60 ]; then
+        log "❌ ERROR: Payara not responding after restart"
+        log "Checking service status for more details..."
+        sudo systemctl status payara --no-pager 2>&1 | tee -a "$LOGFILE"
+        return 1
+    fi
+    
+    log "Clean deployment state prepared successfully."
 }
 
 # Function to clear application caches and force clean state
@@ -2238,6 +2621,88 @@ clear_application_state() {
     fi
 }
 
+# Function to attempt a forced clean deployment as a last resort
+attempt_forced_clean_deployment() {
+    log "🔄 Attempting forced clean deployment as final recovery step..."
+    
+    # Stop Payara completely
+    log "Stopping Payara service completely..."
+    sudo systemctl stop payara 2>&1 | tee -a "$LOGFILE"
+    
+    # Comprehensive cleanup of all deployment artifacts
+    log "Performing comprehensive cleanup of all deployment artifacts..."
+    sudo rm -rf "$PAYARA/glassfish/domains/domain1/generated" 2>/dev/null || true
+    sudo rm -rf "$PAYARA/glassfish/domains/domain1/osgi-cache" 2>/dev/null || true
+    sudo rm -rf "$PAYARA/glassfish/domains/domain1/lib/databases" 2>/dev/null || true
+    sudo rm -rf "$PAYARA/glassfish/domains/domain1/applications/__internal" 2>/dev/null || true
+    sudo rm -rf "$PAYARA/glassfish/domains/domain1/applications/.dataverse*" 2>/dev/null || true
+    sudo rm -rf "$PAYARA/glassfish/domains/domain1/applications/dataverse*" 2>/dev/null || true
+    
+    # Clear any temporary deployment files
+    log "Clearing temporary deployment files..."
+    sudo find "$PAYARA/glassfish/domains/domain1" -name "*.tmp" -delete 2>/dev/null || true
+    sudo find "$PAYARA/glassfish/domains/domain1" -name "*.tmp.*" -delete 2>/dev/null || true
+    
+    # Start Payara with clean state
+    log "Starting Payara with completely clean state..."
+    if ! sudo systemctl start payara 2>&1 | tee -a "$LOGFILE"; then
+        log "❌ ERROR: Failed to start Payara service during forced clean deployment"
+        return 1
+    fi
+    
+    # Extended wait for startup
+    log "Waiting 120 seconds for Payara to fully start with clean state..."
+    sleep 120
+    
+    # Verify Payara is responding
+    local counter=0
+    while [ $counter -lt 120 ]; do
+        if sudo -u "$DATAVERSE_USER" $PAYARA/bin/asadmin list-applications >/dev/null 2>&1; then
+            log "Payara is responding to asadmin commands."
+            break
+        fi
+        sleep 10
+        counter=$((counter + 10))
+    done
+    
+    if [ $counter -ge 120 ]; then
+        log "❌ ERROR: Payara not responding after forced clean restart"
+        return 1
+    fi
+    
+    # Attempt deployment with forced clean state
+    log "Attempting deployment with forced clean state..."
+    local forced_deploy_output=$(mktemp)
+    
+    if sudo -u "$DATAVERSE_USER" $PAYARA/bin/asadmin deploy "$WAR_FILE_LOCATION/dataverse-${TARGET_VERSION}.war" 2>&1 | tee -a "$LOGFILE" > "$forced_deploy_output"; then
+        log "Forced clean deployment command completed. Analyzing output..."
+        if analyze_deployment_output "$forced_deploy_output"; then
+            log "✅ Forced clean deployment completed successfully!"
+            rm -f "$forced_deploy_output"
+            
+            # Extended wait for database migrations
+            log "Waiting 180 seconds for database migrations to complete after forced clean deployment..."
+            sleep 180
+            
+            if verify_deployment; then
+                log "✅ Forced clean deployment verified successfully!"
+                return 0
+            else
+                log "❌ ERROR: Forced clean deployment verification failed."
+                return 1
+            fi
+        else
+            log "❌ ERROR: Forced clean deployment failed with non-benign errors."
+            rm -f "$forced_deploy_output"
+            return 1
+        fi
+    else
+        log "❌ ERROR: Forced clean deployment command failed."
+        rm -f "$forced_deploy_output"
+        return 1
+    fi
+}
+
 # Function to run database migrations if needed
 run_database_migrations() {
     log "Checking if database migrations are needed..."
@@ -2249,9 +2714,11 @@ run_database_migrations() {
     # This is a fallback in case automatic migrations didn't run
     local migration_endpoint="http://localhost:8080/api/admin/migrate"
     
-    if curl -s -f "$migration_endpoint" &> /dev/null; then
+    if curl -s -f "$migration_endpoint" 2>/dev/null; then
         log "Database migration endpoint available, attempting to trigger migrations..."
-        if curl -X POST -s "$migration_endpoint" 2>&1 | tee -a "$LOGFILE"; then
+        local migration_response=$(curl -X POST -s "$migration_endpoint" 2>/dev/null)
+        if [ -n "$migration_response" ]; then
+            log "Migration response: $migration_response"
             log "Database migration request completed."
         else
             log "Database migration request failed, but this may be normal if migrations are automatic."
@@ -2273,15 +2740,17 @@ recover_indexing_after_restart() {
     sleep 10
     
     # Check if Solr index is empty
-    local index_doc_count=$(curl -s "http://localhost:8983/solr/collection1/select?q=*:*&rows=0" 2>/dev/null | jq -r '.response.numFound' 2>/dev/null || echo "0")
+    local index_doc_count=$(get_solr_doc_count)
     log "Current index contains: $index_doc_count documents"
     
     if [ "$index_doc_count" -eq 0 ]; then
         log "Index is empty after restart. Checking if this is expected..."
-        
+
+        # Hacky workaround to avoid curl error when index is empty
+        FAIL_MESSAGE='{"status":"NULL","data":{"availablePartitionIds":[0],"args":{"numPartitions":1,"partitionIdToProcess":0},"message":""}}'
         # Get dataset count from API to see if we should have content
-        local api_response=$(curl -s "http://localhost:8080/api/admin/index" 2>/dev/null)
-        if echo "$api_response" | jq -e '.data.message' >/dev/null 2>&1; then
+        local api_response=$(curl -s "http://localhost:8080/api/admin/index" 2>/dev/null || echo "$FAIL_MESSAGE")
+        if echo "$api_response" | jq -e '.data.message'; then
             local expected_items=$(echo "$api_response" | jq -r '.data.message' | grep -oE '[0-9]+ dataverses and [0-9]+ datasets' || echo "")
             if [[ -n "$expected_items" ]]; then
                 log "Expected content found: $expected_items"
@@ -2290,6 +2759,11 @@ recover_indexing_after_restart() {
                 # Start reindexing
                 log "Running recovery command: curl http://localhost:8080/api/admin/index"
                 local recovery_result=$(curl -s "http://localhost:8080/api/admin/index" 2>/dev/null)
+                # Check if recovery_result is a valid JSON object
+                if ! echo "$recovery_result" | jq -e '.status' >/dev/null 2>&1; then
+                    log "✗ Recovery result is not a valid JSON object"
+                    return 1
+                fi
                 if echo "$recovery_result" | jq -e '.status' >/dev/null 2>&1; then
                     local recovery_msg=$(echo "$recovery_result" | jq -r '.data.message' 2>/dev/null || "Recovery indexing started")
                     log "✓ Recovery indexing initiated: $recovery_msg"
@@ -2301,7 +2775,12 @@ recover_indexing_after_restart() {
                     
                     while [ $(($(date +%s) - start_time)) -lt 60 ]; do
                         sleep 10
-                        local current_count=$(curl -s "http://localhost:8983/solr/collection1/select?q=*:*&rows=0" 2>/dev/null | jq -r '.response.numFound' 2>/dev/null || echo "0")
+                        local current_count=$(get_solr_doc_count)
+                        # Check if current_count is a number
+                        if ! [[ "$current_count" =~ ^[0-9]+$ ]]; then
+                            log "✗ Current count is not a number"
+                            return 1
+                        fi
                         
                         if [ "$current_count" -gt "$last_count" ]; then
                             log "Recovery progress: $current_count documents indexed"
@@ -2404,7 +2883,12 @@ verify_deployment() {
         # Check for successful deployment by curling the API endpoint
         if curl -s --fail "http://localhost:8080/api/info/version" &> /dev/null; then
             local version
-            version=$(curl -s "http://localhost:8080/api/info/version" | jq -r '.data.version' 2>/dev/null)
+            version=$(curl -s "http://localhost:8080/api/info/version" 2>/dev/null | jq -r '.data.version' 2>/dev/null)
+            # Check if version is a valid version number
+            if ! [[ "$version" =~ ^[0-9]+\.[0-9]+(\.[0-9]+)?$ ]]; then
+                log "✗ Deployment verification failed: $version is not a valid version number"
+                return 1
+            fi
             if [[ -n "$version" && "$version" == "$TARGET_VERSION"* ]]; then
                 log "Deployment of dataverse-$TARGET_VERSION verified successfully. Version: $version"
                 return 0
@@ -2535,8 +3019,23 @@ configure_feature_flags() {
     
     if [[ "$ENABLE_HARVESTED_FLAG" =~ ^[Yy]$ ]]; then
         log "Enabling index-harvested-metadata-source feature flag..."
-        # This would be set via API or configuration - implementation depends on how Dataverse handles this
-        log "Feature flag configuration completed. (Note: This may require manual configuration via admin interface)"
+        
+        # Set the feature flag via JVM options (as per Dataverse 6.6 documentation)
+        log "Setting dataverse.feature.index-harvested-metadata-source=true via JVM options..."
+        
+        # Check if the JVM option already exists
+        if sudo -u "$DATAVERSE_USER" $PAYARA/bin/asadmin list-jvm-options | grep -q 'dataverse.feature.index-harvested-metadata-source=true'; then
+            log "✅ index-harvested-metadata-source feature flag is already enabled"
+        else
+            # Add the JVM option
+            if sudo -u "$DATAVERSE_USER" $PAYARA/bin/asadmin create-jvm-options "-Ddataverse.feature.index-harvested-metadata-source=true" 2>&1 | tee -a "$LOGFILE"; then
+                log "✅ index-harvested-metadata-source feature flag enabled successfully"
+                log "Note: Payara will need to be restarted for this change to take effect"
+            else
+                log "⚠️ WARNING: Could not set feature flag via JVM options."
+                log "You may need to set it manually: dataverse.feature.index-harvested-metadata-source=true"
+            fi
+        fi
     else
         log "Skipping index-harvested-metadata-source feature flag."
     fi
@@ -2589,7 +3088,7 @@ restart_payara() {
     log "Waiting for Payara to fully initialize (timeout: ${PAYARA_START_TIMEOUT}s)..."
     local COUNTER=0
     while [ $COUNTER -lt $PAYARA_START_TIMEOUT ]; do
-        if curl -s -f "http://localhost:8080/api/info/version" > /dev/null 2>&1; then
+        if curl -s -f "http://localhost:8080/api/info/version" 2> /dev/null; then
             log "Payara is ready and responding on port 8080."
             break
         fi
@@ -2620,8 +3119,16 @@ update_citation_metadata_block() {
     TMP_DIR=$(mktemp -d)
     cd "$TMP_DIR"
     
-    wget -O citation.tsv "$CITATION_TSV_URL"
-    check_error "Failed to download citation metadata block"
+    # Download with caching
+    if ! download_with_cache "$CITATION_TSV_URL" "citation.tsv" "citation metadata block" "$CITATION_TSV_SHA256"; then
+        log "❌ ERROR: Failed to download citation metadata block"
+        cd "$SCRIPT_DIR"
+        rm -rf "$TMP_DIR"
+        return 1
+    fi
+    
+    # Copy cached file to current directory
+    cp "$DOWNLOAD_CACHE_DIR/citation.tsv" "citation.tsv"
     
     log "Loading citation metadata block (this may take several seconds due to size)..."
     log "Running command: curl http://localhost:8080/api/admin/datasetfield/load -H Content-type: text/tab-separated-values -X POST --upload-file citation.tsv"
@@ -2644,8 +3151,16 @@ add_3d_objects_metadata_block() {
     TMP_DIR=$(mktemp -d)
     cd "$TMP_DIR"
     
-    wget -O 3d_objects.tsv "$OBJECTS_3D_TSV_URL"
-    check_error "Failed to download 3D Objects metadata block"
+    # Download with caching
+    if ! download_with_cache "$OBJECTS_3D_TSV_URL" "3d_objects.tsv" "3D Objects metadata block" "$OBJECTS_3D_TSV_SHA256"; then
+        log "❌ ERROR: Failed to download 3D Objects metadata block"
+        cd "$SCRIPT_DIR"
+        rm -rf "$TMP_DIR"
+        return 1
+    fi
+    
+    # Copy cached file to current directory
+    cp "$DOWNLOAD_CACHE_DIR/3d_objects.tsv" "3d_objects.tsv"
     
     log "Running command: curl http://localhost:8080/api/admin/datasetfield/load -H Content-type: text/tab-separated-values -X POST --upload-file 3d_objects.tsv"
     if curl "http://localhost:8080/api/admin/datasetfield/load" \
@@ -2707,7 +3222,8 @@ attempt_service_recovery() {
     
     # Check available disk space and memory
     local disk_usage=$(df / | awk 'NR==2 {print $5}' | tr -d '%')
-    local memory_available=$(free | awk '/^Mem:/ {printf "%.0f", $7/1024/1024}')
+    # Use the "available" column from the "free -m" output, which is in MB
+    local memory_available=$(free --giga | awk '/^Mem:/ {print $7}')
     
     if [ "$disk_usage" -gt 90 ]; then
         log "⚠️ WARNING: Disk usage is ${disk_usage}% - this may cause service issues"
@@ -2722,7 +3238,7 @@ attempt_service_recovery() {
     fi
     
     # Test basic connectivity
-    if ! curl -s --max-time 5 --connect-timeout 2 "http://localhost:8983/solr/admin/ping" > /dev/null 2>&1; then
+    if ! curl -s --max-time 5 --connect-timeout 2 "http://localhost:8983/solr/admin/ping" 2> /dev/null > /dev/null; then
         log "❌ Solr connectivity test failed"
         recovery_success=false
     else
@@ -2883,14 +3399,12 @@ upgrade_solr() {
     cd "$TMP_DIR"
     
     log "Downloading Solr $SOLR_VERSION..."
-    wget -O "solr-${SOLR_VERSION}.tgz" "$SOLR_DOWNLOAD_URL"
-    check_error "Failed to download Solr $SOLR_VERSION"
-    
-    # Verify checksum if available
-    if [[ "$SOLR_SHA256" != "REPLACE_WITH_OFFICIAL_"* ]]; then
-        verify_checksum "solr-${SOLR_VERSION}.tgz" "$SOLR_SHA256" "Solr $SOLR_VERSION"
-        check_error "Solr $SOLR_VERSION checksum verification failed"
+    if ! download_with_cache "$SOLR_DOWNLOAD_URL" "solr-${SOLR_VERSION}.tgz" "Solr $SOLR_VERSION" "$SOLR_SHA256"; then
+        check_error "Failed to download Solr $SOLR_VERSION"
     fi
+    
+    # Copy cached file to current directory for extraction
+    cp "$DOWNLOAD_CACHE_DIR/solr-${SOLR_VERSION}.tgz" "solr-${SOLR_VERSION}.tgz"
     
     log "Extracting Solr $SOLR_VERSION..."
     cd "$(dirname "$SOLR_PATH")"
@@ -2924,11 +3438,18 @@ upgrade_solr() {
     # Download new Solr configuration files from source tree (as per official instructions)
     log "Downloading Solr configuration files from source tree..."
     cd "$TMP_DIR"
-    wget -O schema.xml "$SOLR_SCHEMA_URL"
-    check_error "Failed to download Solr schema"
     
-    wget -O solrconfig.xml "$SOLR_CONFIG_URL"
-    check_error "Failed to download Solr config"
+    # Download schema with caching
+    if ! download_with_cache "$SOLR_SCHEMA_URL" "schema.xml" "Solr schema" "$SOLR_SCHEMA_SHA256"; then
+        check_error "Failed to download Solr schema"
+    fi
+    cp "$DOWNLOAD_CACHE_DIR/schema.xml" "schema.xml"
+    
+    # Download config with caching
+    if ! download_with_cache "$SOLR_CONFIG_URL" "solrconfig.xml" "Solr config" "$SOLR_CONFIG_SHA256"; then
+        check_error "Failed to download Solr config"
+    fi
+    cp "$DOWNLOAD_CACHE_DIR/solrconfig.xml" "solrconfig.xml"
     
     # Install new configuration files
     log "Installing new Solr configuration files..."
@@ -3021,6 +3542,35 @@ recreate_solr_collection() {
     log "Ensuring proper ownership of collection directory..."
     sudo chown -R "$SOLR_USER:" "$SOLR_PATH/server/solr/collection1/"
     
+    # Ensure collection1 directory structure is complete
+    log "Ensuring collection1 directory structure is complete..."
+    if [ ! -d "$SOLR_PATH/server/solr/collection1/conf" ]; then
+        log "Creating conf directory..."
+        sudo -u "$SOLR_USER" mkdir -p "$SOLR_PATH/server/solr/collection1/conf"
+    fi
+    
+    if [ ! -d "$SOLR_PATH/server/solr/collection1/data" ]; then
+        log "Creating data directory..."
+        sudo -u "$SOLR_USER" mkdir -p "$SOLR_PATH/server/solr/collection1/data"
+    fi
+    
+    # Ensure core.properties exists
+    if [ ! -f "$SOLR_PATH/server/solr/collection1/core.properties" ]; then
+        log "Creating core.properties..."
+        echo "name=collection1" | sudo -u "$SOLR_USER" tee "$SOLR_PATH/server/solr/collection1/core.properties" > /dev/null
+    fi
+    
+    # Ensure schema.xml and solrconfig.xml exist
+    if [ ! -f "$SOLR_PATH/server/solr/collection1/conf/schema.xml" ]; then
+        log "❌ ERROR: schema.xml missing from collection1/conf/"
+        return 1
+    fi
+    
+    if [ ! -f "$SOLR_PATH/server/solr/collection1/conf/solrconfig.xml" ]; then
+        log "❌ ERROR: solrconfig.xml missing from collection1/conf/"
+        return 1
+    fi
+    
     # Start Solr to create a fresh collection
     log "Starting Solr to create fresh collection..."
     sudo systemctl start solr
@@ -3056,11 +3606,53 @@ recreate_solr_collection() {
         return 1
     fi
     
+    # More robust collection verification - check multiple endpoints
+    log "Performing comprehensive collection verification..."
+    
+    # Check if collection1 exists in the cores status
     if echo "$collection_status" | grep -q '"collection1"'; then
+        log "✓ Collection1 found in cores status"
+    else
+        log "⚠️ Collection1 not found in cores status, checking alternative endpoints..."
+        
+        # Try the collection-specific endpoint
+        local collection_info=$(curl -s "http://localhost:8983/solr/collection1/admin/ping" 2>/dev/null)
+        if [ -n "$collection_info" ]; then
+            log "✓ Collection1 responds to ping endpoint"
+        else
+            # Try to create the collection if it doesn't exist
+            log "Attempting to create collection1..."
+            local create_response=$(curl -s "http://localhost:8983/solr/admin/collections?action=CREATE&name=collection1&numShards=1&replicationFactor=1" 2>/dev/null)
+            if [ -n "$create_response" ]; then
+                log "Collection creation response: $create_response"
+                # Wait a moment for the collection to initialize
+                sleep 5
+                
+                # Check again
+                collection_info=$(curl -s "http://localhost:8983/solr/collection1/admin/ping" 2>/dev/null)
+                if [ -n "$collection_info" ]; then
+                    log "✓ Collection1 created and responding"
+                else
+                    log "❌ ERROR: Failed to create collection1"
+                    log "Collection status: $collection_status"
+                    return 1
+                fi
+            else
+                log "❌ ERROR: Failed to create collection1"
+                log "Collection status: $collection_status"
+                return 1
+            fi
+        fi
+    fi
+    
+    # Final verification - try a simple query
+    local query_test=$(curl -s "http://localhost:8983/solr/collection1/select?q=*:*&rows=0" 2>/dev/null)
+    if [ -n "$query_test" ]; then
+        log "✓ Collection1 responds to queries"
         log "✓ Solr collection recreated successfully"
         log "✓ Collection is healthy and ready for indexing"
     else
-        log "❌ ERROR: Collection1 not found in Solr status"
+        log "❌ ERROR: Collection1 does not respond to queries"
         log "Collection status: $collection_status"
         return 1
     fi
@@ -3091,7 +3683,16 @@ diagnose_solr_issues() {
         log "❌ ERROR: schema.xml not found. Downloading fresh copy..."
         TMP_DIR=$(mktemp -d)
         cd "$TMP_DIR"
-        wget -O schema.xml "$SOLR_SCHEMA_URL"
+        
+        # Download with caching
+        if ! download_with_cache "$SOLR_SCHEMA_URL" "schema.xml" "Solr schema" "$SOLR_SCHEMA_SHA256"; then
+            log "❌ ERROR: Failed to download Solr schema"
+            cd "$SCRIPT_DIR"
+            rm -rf "$TMP_DIR"
+            return 1
+        fi
+        
+        cp "$DOWNLOAD_CACHE_DIR/schema.xml" "schema.xml"
         sudo cp schema.xml "$SOLR_PATH/server/solr/collection1/conf/"
         sudo chown "$SOLR_USER:" "$SOLR_PATH/server/solr/collection1/conf/schema.xml"
         cd "$SCRIPT_DIR"
@@ -3107,7 +3708,16 @@ diagnose_solr_issues() {
         log "❌ ERROR: solrconfig.xml not found. Downloading fresh copy..."
         TMP_DIR=$(mktemp -d)
         cd "$TMP_DIR"
-        wget -O solrconfig.xml "$SOLR_CONFIG_URL"
+        
+        # Download with caching
+        if ! download_with_cache "$SOLR_CONFIG_URL" "solrconfig.xml" "Solr config" "$SOLR_CONFIG_SHA256"; then
+            log "❌ ERROR: Failed to download Solr config"
+            cd "$SCRIPT_DIR"
+            rm -rf "$TMP_DIR"
+            return 1
+        fi
+        
+        cp "$DOWNLOAD_CACHE_DIR/solrconfig.xml" "solrconfig.xml"
         sudo cp solrconfig.xml "$SOLR_PATH/server/solr/collection1/conf/"
         sudo chown "$SOLR_USER:" "$SOLR_PATH/server/solr/collection1/conf/solrconfig.xml"
         cd "$SCRIPT_DIR"
@@ -3258,13 +3868,15 @@ reinstall_solr_if_needed() {
         cd "$TMP_DIR"
         
         log "Downloading Solr $SOLR_VERSION..."
-        wget -O "solr-${SOLR_VERSION}.tgz" "$SOLR_DOWNLOAD_URL"
-        if [ $? -ne 0 ]; then
+        if ! download_with_cache "$SOLR_DOWNLOAD_URL" "solr-${SOLR_VERSION}.tgz" "Solr $SOLR_VERSION" "$SOLR_SHA256"; then
             log "❌ ERROR: Failed to download Solr $SOLR_VERSION"
             cd "$SCRIPT_DIR"
             rm -rf "$TMP_DIR"
             return 1
         fi
+        
+        # Copy cached file to current directory for extraction
+        cp "$DOWNLOAD_CACHE_DIR/solr-${SOLR_VERSION}.tgz" "solr-${SOLR_VERSION}.tgz"
         
         log "Extracting Solr $SOLR_VERSION..."
         cd /usr/local
@@ -3313,7 +3925,7 @@ update_solr_custom_fields() {
         fi
         
         # Check API endpoint with more tolerant curl options
-        if curl -s --max-time 10 --connect-timeout 5 --fail "http://localhost:8080/api/info/version" > /dev/null 2>&1; then
+        if curl -s --max-time 10 --connect-timeout 5 --fail "http://localhost:8080/api/info/version" 2> /dev/null; then
             api_ready=true
             log "✓ Dataverse API is ready ($counter seconds)"
             break
@@ -3343,7 +3955,7 @@ update_solr_custom_fields() {
             log "✓ Service recovery successful. Retrying API check..."
             # One more quick check after recovery
             sleep 10
-            if curl -s --max-time 10 --connect-timeout 5 --fail "http://localhost:8080/api/info/version" > /dev/null 2>&1; then
+            if curl -s --max-time 10 --connect-timeout 5 --fail "http://localhost:8080/api/info/version" 2> /dev/null; then
                 api_ready=true
                 log "✓ Dataverse API is now ready after recovery"
             fi
@@ -3359,7 +3971,9 @@ update_solr_custom_fields() {
         local fallback_tmp=$(mktemp -d)
         cd "$fallback_tmp"
         
-        if wget -O base_schema.xml "$SOLR_SCHEMA_URL" 2>/dev/null; then
+        # Download base schema with caching
+        if download_with_cache "$SOLR_SCHEMA_URL" "base_schema.xml" "base Solr schema" "$SOLR_SCHEMA_SHA256"; then
+            cp "$DOWNLOAD_CACHE_DIR/base_schema.xml" "base_schema.xml"
             if xmllint --noout base_schema.xml 2>/dev/null; then
                 if sudo cp base_schema.xml "$schema_file" && sudo chown "$SOLR_USER:" "$schema_file"; then
                     log "✓ Base Dataverse 6.6 schema installed successfully"
@@ -3409,16 +4023,15 @@ update_solr_custom_fields() {
         log "Custom metadata blocks detected: $custom_blocks"
         log "Updating Solr schema with custom fields..."
         
-        TMP_DIR=$(mktemp -d)
-        cd "$TMP_DIR"
-        
-        # Download update-fields script
-        log "Downloading update-fields script..."
-        wget -O update-fields.sh "$UPDATE_FIELDS_URL"
-        check_error "Failed to download update-fields script"
-        
-        # Set proper permissions for the script
-        chmod 755 update-fields.sh
+        # Download update-fields script using cache
+        local update_script_name="update-fields.sh"
+        if ! download_with_cache "$UPDATE_FIELDS_URL" "$update_script_name" "update-fields.sh script" "$UPDATE_FIELDS_SHA256"; then
+            log "❌ ERROR: Failed to download update-fields.sh script. Aborting custom field update."
+            # This is not a fatal error for the whole upgrade, so we return 0 but log an error.
+            return 0
+        fi
+        local update_script_path="$DOWNLOAD_CACHE_DIR/$update_script_name"
+        chmod +x "$update_script_path"
         
         # Stop Solr for schema update (critical step)
         log "Stopping Solr service for schema update..."
@@ -3463,8 +4076,17 @@ update_solr_custom_fields() {
         local api_ready=false
         local api_timeout=180  # Extended to 3 minutes
         local api_counter=0
+        local payara_crashed=false
         
         while [ $api_counter -lt $api_timeout ]; do
+            # Check if Payara is actually running
+            if ! systemctl is-active --quiet payara; then
+                log "⚠️ WARNING: Payara service crashed during schema update. Attempting restart..."
+                sudo systemctl restart payara
+                sleep 30  # Give Payara time to restart
+                payara_crashed=true
+            fi
+            
             # Check both API endpoint and schema endpoint specifically
             if curl -s --max-time 15 "http://localhost:8080/api/info/version" >/dev/null 2>&1 && \
                curl -s --max-time 15 "$schema_api_url" | grep -q '"name"' 2>/dev/null; then
@@ -3479,20 +4101,36 @@ update_solr_custom_fields() {
         
         if [ "$api_ready" = false ]; then
             log "❌ ERROR: Dataverse API not ready after $api_timeout seconds"
-            log "This should not happen as schema fallback should have occurred at 60 seconds"
-            schema_update_success=false
+            if [ "$payara_crashed" = true ]; then
+                log "⚠️ Payara crashed during schema update. This is a known issue."
+                log "Proceeding with fallback schema update..."
+                # Force fallback schema update when Payara crashes
+                log "🔄 Adding fallback custom fields due to Payara crash..."
+                add_fallback_custom_fields
+                if [ $? -eq 0 ]; then
+                    log "✅ Fallback schema update completed successfully"
+                    schema_update_success=true
+                else
+                    log "❌ Fallback schema update failed"
+                    schema_update_success=false
+                fi
+            else
+                log "This should not happen as schema fallback should have occurred at 60 seconds"
+                schema_update_success=false
+            fi
         else
             # Now attempt schema retrieval with robust error handling
             while [ $retry_count -lt $max_retries ] && [ "$schema_update_success" = false ]; do
                 retry_count=$((retry_count + 1))
                 log "Schema update attempt $retry_count of $max_retries..."
             
+            local current_schema_json_path="$DOWNLOAD_CACHE_DIR/current_schema.json"
             # Download fresh schema data for each attempt
-            if curl -s --max-time 30 --retry 2 "$schema_api_url" > current_schema.json 2>&1; then
+            if curl -s --max-time 30 --retry 2 "$schema_api_url" > "$current_schema_json_path" 2>&1; then
                 log "✓ Retrieved schema from Dataverse API (attempt $retry_count)"
                 
                 # Validate the schema JSON is not empty and contains field definitions
-                local field_count=$(grep -c '<field name=' current_schema.json 2>/dev/null || echo "0")
+                local field_count=$(grep -c '<field name=' "$current_schema_json_path" 2>/dev/null || echo "0")
                 # Ensure we have a clean integer
                 field_count=$(echo "$field_count" | tr -d '\n\r\t ' | head -1)
                 if ! [[ "$field_count" =~ ^[0-9]+$ ]]; then
@@ -3519,10 +4157,10 @@ update_solr_custom_fields() {
                 log "Schema fields before update: $fields_before"
                 
                 # Run the update-fields script with detailed logging
-                log "Executing: cat current_schema.json | bash update-fields.sh $temp_schema_file"
+                log "Executing: cat $current_schema_json_path | bash $update_script_path $temp_schema_file"
                 local update_output_file="/tmp/update_fields_output_${retry_count}.log"
                 
-                if cat current_schema.json | bash update-fields.sh "$temp_schema_file" > "$update_output_file" 2>&1; then
+                if cat "$current_schema_json_path" | bash "$update_script_path" "$temp_schema_file" > "$update_output_file" 2>&1; then
                     log "Update-fields script completed without errors"
                     
                     # Count fields after update
@@ -3596,6 +4234,7 @@ update_solr_custom_fields() {
             log "❌ ERROR: Failed to update schema after $max_retries attempts"
             log "This may cause issues with custom metadata field indexing"
             log "The upgrade will continue, but custom metadata search may not work properly"
+            exit 1
         fi
     fi
         
@@ -3634,8 +4273,6 @@ update_solr_custom_fields() {
         sudo chown "$SOLR_USER:" "$schema_file"
         
         log "Custom metadata block fields update process completed."
-        cd "$SCRIPT_DIR"
-        rm -rf "$TMP_DIR"
     else
         log "No custom metadata blocks detected. Skipping custom field updates."
     fi
@@ -3787,6 +4424,230 @@ update_solr_custom_fields() {
     fi
     
     log "Solr custom fields update completed successfully."
+    
+    # Verify the schema update was successful by checking for new fields
+    log "Verifying schema update was successful..."
+    sleep 5  # Give Solr a moment to process the schema changes
+    
+    local schema_check=$(curl -s "http://localhost:8080/api/admin/index/solr/schema" 2>/dev/null)
+    if [ -n "$schema_check" ]; then
+        log "✅ Schema verification successful - schema is accessible after update"
+        
+        # Check for key new fields that should be present
+        local has_version_note=$(echo "$schema_check" | grep -c "versionNote" || echo "0")
+        local has_file_restricted=$(echo "$schema_check" | grep -c "fileRestricted" || echo "0")
+        local has_can_download=$(echo "$schema_check" | grep -c "canDownloadFile" || echo "0")
+        
+        # Clean up variables to ensure they are valid integers
+        has_version_note=$(echo "$has_version_note" | tr -d '\n\r\t ' | head -1)
+        has_file_restricted=$(echo "$has_file_restricted" | tr -d '\n\r\t ' | head -1)
+        has_can_download=$(echo "$has_can_download" | tr -d '\n\r\t ' | head -1)
+        
+        # Convert to integers, defaulting to 0 if not a number
+        if ! [[ "$has_version_note" =~ ^[0-9]+$ ]]; then has_version_note="0"; fi
+        if ! [[ "$has_file_restricted" =~ ^[0-9]+$ ]]; then has_file_restricted="0"; fi
+        if ! [[ "$has_can_download" =~ ^[0-9]+$ ]]; then has_can_download="0"; fi
+        
+        log "Schema field verification:"
+        log "  - versionNote fields: $has_version_note"
+        log "  - fileRestricted fields: $has_file_restricted"
+        log "  - canDownloadFile fields: $has_can_download"
+        
+        if [ "$has_version_note" -gt 0 ] || [ "$has_file_restricted" -gt 0 ] || [ "$has_can_download" -gt 0 ]; then
+            log "✅ Schema update appears successful - new fields detected"
+        else
+            log "⚠️ WARNING: No new 6.6 fields detected in schema. This may indicate an issue."
+            log "The reindexing process will continue, but you should verify the schema manually."
+        fi
+    else
+        log "❌ ERROR: Cannot verify schema after update. Schema may not be properly updated."
+        log "This could cause indexing issues during reindexing."
+        
+        # CRITICAL FIX: Add fallback custom fields if schema verification fails
+        log "🔄 Adding fallback custom fields to prevent indexing failures..."
+        add_fallback_custom_fields
+    fi
+}
+
+# Function to add fallback custom fields when schema update fails
+add_fallback_custom_fields() {
+    log "Adding fallback custom fields to prevent indexing failures..."
+    
+    local schema_file="$SOLR_PATH/server/solr/collection1/conf/schema.xml"
+    
+    # Check if schema file exists and is writable
+    if [ ! -f "$schema_file" ]; then
+        log "❌ ERROR: Schema file not found at $schema_file"
+        return 1
+    fi
+    
+    # Create backup before modification
+    sudo cp "$schema_file" "${schema_file}.backup.fallback.$(date +%Y%m%d_%H%M%S)"
+    
+    # Add common custom fields that are likely to be needed
+    log "Adding common custom metadata fields to schema..."
+    
+    
+    # Define all software fields with their properties
+    # Try to load from .env file first, fallback to hardcoded defaults
+    local env_file="${SCRIPT_DIR}/.env"
+    if [ -f "$env_file" ]; then
+        log "Loading software field definitions from .env file..."
+        source "$env_file"
+    fi
+    
+    # Define software fields with environment variable fallbacks
+    declare -A software_fields
+    
+    # Multi-valued fields
+    software_fields["swDependencyDescription"]="${SOFTWARE_FIELD_SWDEPENDENCYDESCRIPTION:-true}"
+    software_fields["swFunction"]="${SOFTWARE_FIELD_SWFUNCTION:-true}"
+    software_fields["swContributorName"]="${SOFTWARE_FIELD_SWCONTRIBUTORNAME:-true}"
+    software_fields["swContributorRole"]="${SOFTWARE_FIELD_SWCONTRIBUTORROLE:-true}"
+    software_fields["swContributorId"]="${SOFTWARE_FIELD_SWCONTRIBUTORID:-true}"
+    software_fields["swOtherRelatedResourceType"]="${SOFTWARE_FIELD_SWOTHERRESOURCETYPE:-true}"
+    software_fields["swDependencyLink"]="${SOFTWARE_FIELD_SWDEPENDENCYLINK:-true}"
+    software_fields["swInteractionMethod"]="${SOFTWARE_FIELD_SWINTERACTIONMETHOD:-true}"
+    software_fields["swLanguage"]="${SOFTWARE_FIELD_SWLANGUAGE:-true}"
+    software_fields["swOtherRelatedResourceDescription"]="${SOFTWARE_FIELD_SWOTHERRESOURCEDESCRIPTION:-true}"
+    software_fields["swOtherRelatedSoftwareType"]="${SOFTWARE_FIELD_SWOTHERSOFTWARETYPE:-true}"
+    software_fields["swOtherRelatedSoftwareDescription"]="${SOFTWARE_FIELD_SWOTHERSOFTWAREDESCRIPTION:-true}"
+    software_fields["swOtherRelatedSoftwareLink"]="${SOFTWARE_FIELD_SWOTHERSOFTWARELINK:-true}"
+    software_fields["swContributorNote"]="${SOFTWARE_FIELD_SWCONTRIBUTORNOTE:-true}"
+    software_fields["swInputOutputType"]="${SOFTWARE_FIELD_SWINPUTOUTPUTTYPE:-true}"
+    software_fields["swInputOutputDescription"]="${SOFTWARE_FIELD_SWINPUTOUTPUTDESCRIPTION:-true}"
+    software_fields["swDependencyType"]="${SOFTWARE_FIELD_SWDEPENDENCYTYPE:-true}"
+    software_fields["swOtherRelatedResourceLink"]="${SOFTWARE_FIELD_SWOTHERRESOURCELINK:-true}"
+    
+    # Single-valued fields
+    software_fields["swDescription"]="${SOFTWARE_FIELD_SWDESCRIPTION:-false}"
+    software_fields["swTitle"]="${SOFTWARE_FIELD_SWTITLE:-false}"
+    software_fields["whenCollected"]="${SOFTWARE_FIELD_WHENCOLLECTED:-false}"
+    software_fields["swCodeRepositoryLink"]="${SOFTWARE_FIELD_SWCODEREPOSITORYLINK:-false}"
+    software_fields["swDatePublished"]="${SOFTWARE_FIELD_SWDATEPUBLISHED:-false}"
+    software_fields["howToCite"]="${SOFTWARE_FIELD_HOWTOCITE:-false}"
+    software_fields["swArtifactType"]="${SOFTWARE_FIELD_SWARTIFACTTYPE:-false}"
+    software_fields["swInputOutputLink"]="${SOFTWARE_FIELD_SWINPUTOUTPUTLINK:-false}"
+    software_fields["swIdentifier"]="${SOFTWARE_FIELD_SWIDENTIFIER:-false}"
+    software_fields["swLicense"]="${SOFTWARE_FIELD_SWLICENSE:-false}"
+    software_fields["swVersion"]="${SOFTWARE_FIELD_SWVERSION:-false}"
+    
+    # Validate environment variable values
+    for field in "${!software_fields[@]}"; do
+        local value="${software_fields[$field]}"
+        if [ "$value" != "true" ] && [ "$value" != "false" ] && [ "$value" != "disabled" ]; then
+            log "⚠️  WARNING: Invalid value '$value' for $field, using default 'false'"
+            software_fields["$field"]="false"
+        fi
+    done
+    
+    # Check which fields exist in the schema
+    declare -A field_exists
+    for field in "${!software_fields[@]}"; do
+        field_exists["$field"]=$(grep -c "$field" "$schema_file" 2>/dev/null || echo "0")
+    done
+    
+    # Check for new 6.6 fields
+    local has_version_note=$(grep -c "versionNote" "$schema_file" 2>/dev/null || echo "0")
+    local has_file_restricted=$(grep -c "fileRestricted" "$schema_file" 2>/dev/null || echo "0")
+    local has_can_download=$(grep -c "canDownloadFile" "$schema_file" 2>/dev/null || echo "0")
+    
+    # Clean and validate field existence counts
+    for field in "${!field_exists[@]}"; do
+        field_exists["$field"]=$(echo "${field_exists[$field]}" | tr -d '\n\r\t ' | head -1)
+        if ! [[ "${field_exists[$field]}" =~ ^[0-9]+$ ]]; then 
+            field_exists["$field"]="0"
+        fi
+    done
+    
+    # Process 6.6 fields
+    has_version_note=$(echo "$has_version_note" | tr -d '\n\r\t ' | head -1)
+    has_file_restricted=$(echo "$has_file_restricted" | tr -d '\n\r\t ' | head -1)
+    has_can_download=$(echo "$has_can_download" | tr -d '\n\r\t ' | head -1)
+    
+    if ! [[ "$has_version_note" =~ ^[0-9]+$ ]]; then has_version_note="0"; fi
+    if ! [[ "$has_file_restricted" =~ ^[0-9]+$ ]]; then has_file_restricted="0"; fi
+    if ! [[ "$has_can_download" =~ ^[0-9]+$ ]]; then has_can_download="0"; fi
+    
+    # Add missing fields
+    local fields_added=0
+    
+    # Find the last field definition to insert before it
+    local last_field_line=$(grep -n '<field name=' "$schema_file" | tail -1 | cut -d: -f1)
+    if [ -n "$last_field_line" ]; then
+        local insert_line=$((last_field_line + 1))
+        
+        # Add software fields using the array
+        for field in "${!software_fields[@]}"; do
+            if [ "${field_exists[$field]}" -eq 0 ]; then
+                local multi_valued="${software_fields[$field]}"
+                
+                # Skip disabled fields
+                if [ "$multi_valued" = "disabled" ]; then
+                    log "  ⏭️  Skipping $field field (disabled in .env)"
+                    continue
+                fi
+                
+                sudo sed -i "${insert_line}i\  <field name=\"$field\" type=\"text_general\" indexed=\"true\" stored=\"true\" multiValued=\"$multi_valued\"/>" "$schema_file"
+                fields_added=$((fields_added + 1))
+                if [ "$multi_valued" = "true" ]; then
+                    log "  ✓ Added $field field (multiValued)"
+                else
+                    log "  ✓ Added $field field"
+                fi
+            fi
+        done
+        
+        # Add new 6.6 fields if missing
+        if [ "$has_version_note" -eq 0 ]; then
+            sudo sed -i "${insert_line}i\  <field name=\"versionNote\" type=\"text_general\" indexed=\"true\" stored=\"true\" multiValued=\"false\"/>" "$schema_file"
+            fields_added=$((fields_added + 1))
+            log "  ✓ Added versionNote field (6.6)"
+        fi
+        
+        if [ "$has_file_restricted" -eq 0 ]; then
+            sudo sed -i "${insert_line}i\  <field name=\"fileRestricted\" type=\"boolean\" indexed=\"true\" stored=\"true\" multiValued=\"false\"/>" "$schema_file"
+            fields_added=$((fields_added + 1))
+            log "  ✓ Added fileRestricted field (6.6)"
+        fi
+        
+        if [ "$has_can_download" -eq 0 ]; then
+            sudo sed -i "${insert_line}i\  <field name=\"canDownloadFile\" type=\"boolean\" indexed=\"true\" stored=\"true\" multiValued=\"false\"/>" "$schema_file"
+            fields_added=$((fields_added + 1))
+            log "  ✓ Added canDownloadFile field (6.6)"
+        fi
+    else
+        log "❌ ERROR: Could not find field definitions in schema file"
+        return 1
+    fi
+    
+    # Verify the schema is still valid XML
+    if xmllint --noout "$schema_file" 2>/dev/null; then
+        log "✅ Schema validation passed after adding $fields_added fallback fields"
+        
+        # Restart Solr to apply the schema changes
+        log "Restarting Solr to apply fallback schema changes..."
+        sudo systemctl restart solr
+        
+        # Wait for Solr to be ready
+        local counter=0
+        while [ $counter -lt 60 ]; do
+            if curl -s "http://localhost:8983/solr/admin/cores?action=STATUS&core=collection1" > /dev/null 2>&1; then
+                log "✅ Solr restarted successfully with fallback fields"
+                return 0
+            fi
+            sleep 2
+            counter=$((counter + 2))
+        done
+        
+        log "❌ ERROR: Solr failed to restart after adding fallback fields"
+        return 1
+    else
+        log "❌ ERROR: Schema file is invalid XML after adding fallback fields"
+        log "Restoring backup..."
+        sudo cp "${schema_file}.backup.fallback.$(date +%Y%m%d_%H%M%S)" "$schema_file"
+        return 1
+    fi
 }
 
 # STEP 12: Reindex Solr with verification and recovery
@@ -3794,8 +4655,125 @@ reindex_solr() {
     log "Starting Solr reindexing process with verification..."
     log "NOTE: This process may take a significant amount of time depending on the size of your installation."
     
+    # Verify Solr schema is properly updated before reindexing
+    log "Verifying Solr schema is properly updated before reindexing..."
+    
+    # Check if Payara is running before attempting schema verification
+    if ! systemctl is-active --quiet payara; then
+        log "⚠️ WARNING: Payara service is down. Attempting restart..."
+        sudo systemctl restart payara
+        sleep 30  # Give Payara time to restart
+        log "Waiting for Payara to be ready after restart..."
+        local payara_wait=0
+        while [ $payara_wait -lt 120 ]; do
+            if curl -s --max-time 10 "http://localhost:8080/api/info/version" > /dev/null 2>&1; then
+                log "✓ Payara is ready after restart"
+                break
+            fi
+            sleep 10
+            payara_wait=$((payara_wait + 10))
+        done
+        if [ $payara_wait -ge 120 ]; then
+            log "❌ ERROR: Payara failed to restart properly"
+            return 1
+        fi
+    fi
+    
+    local schema_verification=$(curl -s "http://localhost:8080/api/admin/index/solr/schema" 2>/dev/null)
+    
+    if [ -n "$schema_verification" ]; then
+        log "✅ Solr schema verification successful - schema is accessible"
+        
+        # Check for new fields that should be present in 6.6
+        local has_version_note=$(echo "$schema_verification" | grep -c "versionNote" || echo "0")
+        local has_file_restricted=$(echo "$schema_verification" | grep -c "fileRestricted" || echo "0")
+        local has_can_download=$(echo "$schema_verification" | grep -c "canDownloadFile" || echo "0")
+        
+        # Ensure all variables are integers
+        has_version_note=$(echo "$has_version_note" | tr -d '\n\r\t ' | head -1)
+        has_file_restricted=$(echo "$has_file_restricted" | tr -d '\n\r\t ' | head -1)
+        has_can_download=$(echo "$has_can_download" | tr -d '\n\r\t ' | head -1)
+        
+        # Convert to integers, defaulting to 0 if not a number
+        if ! [[ "$has_version_note" =~ ^[0-9]+$ ]]; then has_version_note="0"; fi
+        if ! [[ "$has_file_restricted" =~ ^[0-9]+$ ]]; then has_file_restricted="0"; fi
+        if ! [[ "$has_can_download" =~ ^[0-9]+$ ]]; then has_can_download="0"; fi
+        
+        if [ "$has_version_note" -gt 0 ] && [ "$has_file_restricted" -gt 0 ] && [ "$has_can_download" -gt 0 ]; then
+            log "✅ Solr schema contains new 6.6 fields (versionNote, fileRestricted, canDownloadFile)"
+        else
+            log "⚠️ WARNING: Some new 6.6 fields may not be present in schema. Proceeding with reindexing anyway..."
+            log "  - versionNote fields found: $has_version_note"
+            log "  - fileRestricted fields found: $has_file_restricted" 
+            log "  - canDownloadFile fields found: $has_can_download"
+        fi
+    else
+        log "❌ ERROR: Cannot verify Solr schema. Schema may not be properly updated."
+        log "This could cause indexing issues. Please check Solr configuration."
+        log "Attempting to diagnose the issue..."
+        
+        # Check if Solr is running
+        if ! curl -s "http://localhost:8983/solr/admin/cores?action=STATUS&core=collection1" > /dev/null 2>&1; then
+            log "❌ ERROR: Solr is not responding. Please check Solr service status."
+            return 1
+        fi
+        
+        # Check if Dataverse API is accessible
+        if ! curl -s "http://localhost:8080/api/info/version" > /dev/null 2>&1; then
+            log "❌ ERROR: Dataverse API is not responding. Please check Payara service status."
+            return 1
+        fi
+        
+        log "⚠️ WARNING: Schema verification failed but services are running."
+        log "This may cause indexing issues. Proceeding with caution..."
+        log "You may need to manually verify the Solr schema configuration."
+    fi
+    
+    # Check if the feature flag is properly set (if it was enabled)
+    log "Checking feature flag configuration..."
+    if sudo -u "$DATAVERSE_USER" $PAYARA/bin/asadmin list-jvm-options | grep -q 'dataverse.feature.index-harvested-metadata-source=true'; then
+        log "✅ index-harvested-metadata-source feature flag is enabled"
+    else
+        log "ℹ️ index-harvested-metadata-source feature flag is disabled"
+    fi
+    
+    # CRITICAL FIX: Check for common custom fields before reindexing
+    log "Checking for common custom fields in Solr schema..."
+    
+    # Final safety check - ensure Payara is running before reindexing
+    if ! systemctl is-active --quiet payara; then
+        log "❌ ERROR: Payara service is down. Cannot proceed with reindexing."
+        log "Please restart Payara manually: sudo systemctl restart payara"
+        return 1
+    fi
+    
+    local schema_check=$(curl -s "http://localhost:8983/solr/collection1/schema" 2>/dev/null)
+    if [ -n "$schema_check" ]; then
+        local has_sw_fields=$(echo "$schema_check" | jq '.schema.fields[] | select(.name | test("sw")) | .name' 2>/dev/null | wc -l)
+        local has_when_collected=$(echo "$schema_check" | jq '.schema.fields[] | select(.name == "whenCollected") | .name' 2>/dev/null | wc -l)
+        
+        # Ensure all variables are integers
+        has_sw_fields=$(echo "$has_sw_fields" | tr -d '\n\r\t ' | head -1)
+        has_when_collected=$(echo "$has_when_collected" | tr -d '\n\r\t ' | head -1)
+        
+        # Convert to integers, defaulting to 0 if not a number
+        if ! [[ "$has_sw_fields" =~ ^[0-9]+$ ]]; then has_sw_fields="0"; fi
+        if ! [[ "$has_when_collected" =~ ^[0-9]+$ ]]; then has_when_collected="0"; fi
+        
+        if [ "$has_sw_fields" -gt 0 ] || [ "$has_when_collected" -gt 0 ]; then
+            log "✅ Custom fields detected in schema - reindexing should work properly"
+        else
+            log "⚠️ WARNING: No custom fields detected in schema. This may cause indexing failures."
+            log "🔄 Adding fallback custom fields before reindexing..."
+            add_fallback_custom_fields
+        fi
+    else
+        log "⚠️ WARNING: Cannot check schema for custom fields. Adding fallback fields..."
+        add_fallback_custom_fields
+    fi
+    
     # First, check the current state of the index
-    local current_doc_count=$(curl -s "http://localhost:8983/solr/collection1/select?q=*:*&rows=0" 2>/dev/null | jq -r '.response.numFound' 2>/dev/null || echo "0")
+    local current_doc_count=$(get_solr_doc_count)
     log "Current index contains $current_doc_count documents"
     
     # Get expected dataset/dataverse count from the database via API
@@ -3810,7 +4788,9 @@ reindex_solr() {
     
     # Clear and rebuild the index for clean state
     log "Clearing Solr index for clean reindexing..."
-    if curl -s "http://localhost:8080/api/admin/index/clear" 2>&1 | tee -a "$LOGFILE"; then
+    local clear_response=$(curl -s "http://localhost:8080/api/admin/index/clear" 2>/dev/null)
+    if [ -n "$clear_response" ]; then
+        log "Clear response: $clear_response"
         log "Solr index cleared successfully"
     else
         log "WARNING: Failed to clear Solr index, continuing with reindex anyway"
@@ -3818,7 +4798,10 @@ reindex_solr() {
     
     # Start reindexing
     log "Running command: curl -s http://localhost:8080/api/admin/index"
-    local reindex_response=$(curl -s "http://localhost:8080/api/admin/index" 2>&1 | tee -a "$LOGFILE")
+    local reindex_response=$(curl -s "http://localhost:8080/api/admin/index" 2>/dev/null)
+    if [ -n "$reindex_response" ]; then
+        log "Reindex response: $reindex_response"
+    fi
     
     if echo "$reindex_response" | jq -e '.status' >/dev/null 2>&1; then
         local reindex_message=$(echo "$reindex_response" | jq -r '.data.message' 2>/dev/null || echo "Reindexing started")
@@ -3836,7 +4819,7 @@ reindex_solr() {
         log "Phase 1: Waiting for initial indexing to start (up to 5 minutes)..."
         while [ $(($(date +%s) - start_time)) -lt $initial_timeout ]; do
             sleep 15
-            local current_count=$(curl -s "http://localhost:8983/solr/collection1/select?q=*:*&rows=0" 2>/dev/null | jq -r '.response.numFound' 2>/dev/null || echo "0")
+            local current_count=$(get_solr_doc_count)
             
             if [ "$current_count" -gt 0 ]; then
                 log "✓ Initial indexing detected: $current_count documents"
@@ -3861,7 +4844,7 @@ reindex_solr() {
         
         while [ $(($(date +%s) - start_time)) -lt $progress_timeout ]; do
             sleep 30  # Longer intervals for progress checking
-            local current_count=$(curl -s "http://localhost:8983/solr/collection1/select?q=*:*&rows=0" 2>/dev/null | jq -r '.response.numFound' 2>/dev/null || echo "0")
+            local current_count=$(get_solr_doc_count)
             local elapsed=$(($(date +%s) - start_time))
             
             if [ "$current_count" != "$last_count" ]; then
@@ -3883,12 +4866,21 @@ reindex_solr() {
                     # Final verification: check if indexing is actually still running
                     local index_status=$(curl -s "http://localhost:8080/api/admin/index/status" 2>/dev/null)
                     if echo "$index_status" | grep -qi "running\|progress"; then
-                        log "INFO: Indexing still active in background. Continuing monitoring..."
-                        stable_count_iterations=0  # Reset counter
+                        log "INFO: Indexing still active in background, but maximum wait time reached."
+                        log "Proceeding with upgrade - indexing will continue in background."
+                        return 0
                     else
                         log "✓ Indexing process completed successfully"
                         return 0
                     fi
+                # If no progress was detected and we've been stable for max iterations, also exit
+                elif [ "$progress_detected" = false ] && [ $stable_count_iterations -ge $max_stable_iterations ]; then
+                    log "⚠️ No indexing progress detected after $max_stable_iterations stable checks"
+                    log "This may indicate an issue with the reindexing process."
+                    log "Current count: $current_count documents"
+                    log "Proceeding with upgrade - please check indexing status manually:"
+                    log "  curl -s http://localhost:8080/api/admin/index/status"
+                    return 0
                 fi
             fi
             
@@ -3951,7 +4943,9 @@ reindex_solr() {
         
         # Try to trigger indexing again with different approach
         log "Attempting to restart indexing with alternative method..."
-        if curl -s "http://localhost:8080/api/admin/index" 2>&1 | tee -a "$LOGFILE"; then
+        local emergency_response=$(curl -s "http://localhost:8080/api/admin/index" 2>/dev/null)
+        if [ -n "$emergency_response" ]; then
+            log "Emergency response: $emergency_response"
             log "Emergency reindexing command sent successfully"
             
             # Wait a bit more to see if this triggers indexing
@@ -3993,7 +4987,9 @@ run_reexport_all() {
     log "This process updates all metadata exports with license enhancements and other v6.6 improvements."
     
     log "Running command: curl -s http://localhost:8080/api/admin/metadata/reExportAll"
-    if curl -s "http://localhost:8080/api/admin/metadata/reExportAll" 2>&1 | tee -a "$LOGFILE"; then
+    local reexport_response=$(curl -s "http://localhost:8080/api/admin/metadata/reExportAll" 2>/dev/null)
+    if [ -n "$reexport_response" ]; then
+        log "ReExport response: $reexport_response"
         log "reExportAll initiated successfully. This may take time depending on the number of datasets."
     else
         log "❌ ERROR: Failed to initiate reExportAll."
@@ -4213,7 +5209,7 @@ verify_upgrade() {
     
     # Check 3D Objects metadata block
     local objects_3d_response=$(curl -s "http://localhost:8080/api/metadatablocks/3d_objects" 2>/dev/null)
-    if echo "$objects_3d_response" | jq -e '.data' > /dev/null 2>&1; then
+    if echo "$objects_3d_response" | jq -e '.data' 2> /dev/null; then
         log "✓ 3D Objects metadata block verification: Loaded"
     else
         log "! 3D Objects metadata block verification: Not found (this is optional for 6.6)"
@@ -4222,7 +5218,7 @@ verify_upgrade() {
     fi
     
     # Test SameSite configuration
-    local samesite_test=$(curl -s -I "http://localhost:8080" | grep -i "samesite")
+    local samesite_test=$(curl -s -I "http://localhost:8080" 2>/dev/null | grep -i "samesite")
     if [[ "$samesite_test" == *"SameSite=Lax"* ]]; then
         log "✓ SameSite configuration verification: Configured"
     else
@@ -4294,7 +5290,7 @@ capture_baseline_metrics() {
     # Capture current Solr index count
     local current_index_count=0
     if curl -s "http://localhost:8983/solr/collection1/select?q=*:*&rows=0" >/dev/null 2>&1; then
-        current_index_count=$(curl -s "http://localhost:8983/solr/collection1/select?q=*:*&rows=0" | jq -r '.response.numFound' 2>/dev/null || echo "0")
+        current_index_count=$(curl -s "http://localhost:8983/solr/collection1/select?q=*:*&rows=0" 2>/dev/null | jq -r '.response.numFound' 2>/dev/null || echo "0")
     fi
     log "Pre-upgrade Solr index count: $current_index_count documents"
     
@@ -4354,18 +5350,20 @@ main() {
     # Check for interrupted steps from previous runs
     check_interrupted_steps
     
+    # Check for required commands
+    check_required_commands
+    
+    # Check sudo access
+    check_sudo_access
+
     # Run comprehensive pre-flight checks
     if ! run_preflight_checks; then
         log "❌ Pre-flight checks failed. Please address the issues and try again."
         exit 1
     fi
     
-    # Check for required commands
-    check_required_commands
-    
-    # Check sudo access
-    check_sudo_access
-    
+    echo ""
+
     # Check checksum configuration
     check_checksum_configuration
     
@@ -4530,16 +5528,32 @@ main() {
         
         # Capture final pre-Solr-upgrade index count for accurate comparison
         log "Capturing final index count before Solr upgrade..."
-        local pre_solr_upgrade_count=$(curl -s "http://localhost:8983/solr/collection1/select?q=*:*&rows=0" 2>/dev/null | jq -r '.response.numFound' 2>/dev/null || echo "0")
-        log "Index count immediately before Solr upgrade: $pre_solr_upgrade_count documents"
+        
+        # Get Solr response with better error handling
+        local solr_response=$(curl -s --max-time 10 "http://localhost:8983/solr/collection1/select?q=*:*&rows=0" 2>/dev/null)
+        local pre_solr_upgrade_count="0"
+        
+        # Check if we got a valid JSON response
+        if [ -n "$solr_response" ] && echo "$solr_response" | jq . >/dev/null 2>&1; then
+            pre_solr_upgrade_count=$(echo "$solr_response" | jq -r '.response.numFound // 0' 2>/dev/null || echo "0")
+            log "Index count immediately before Solr upgrade: $pre_solr_upgrade_count documents"
+        else
+            log "WARNING: Could not get valid response from Solr before upgrade"
+            log "Solr response: $(echo "$solr_response" | head -c 200)"
+            log "Using default count of 0"
+        fi
         
         # Update baseline with the actual count we need to restore
         if [ -f "$SCRIPT_DIR/baseline_metrics.json" ]; then
             # Update the baseline file with the actual count to restore
-            jq --argjson count "$pre_solr_upgrade_count" '.pre_solr_upgrade_count = $count' "$SCRIPT_DIR/baseline_metrics.json" > "$SCRIPT_DIR/baseline_metrics.json.tmp" && \
-            mv "$SCRIPT_DIR/baseline_metrics.json.tmp" "$SCRIPT_DIR/baseline_metrics.json" || {
-                log "WARNING: Failed to update baseline with pre-Solr count"
-            }
+            if echo "$pre_solr_upgrade_count" | grep -q '^[0-9]\+$'; then
+                jq --argjson count "$pre_solr_upgrade_count" '.pre_solr_upgrade_count = $count' "$SCRIPT_DIR/baseline_metrics.json" > "$SCRIPT_DIR/baseline_metrics.json.tmp" && \
+                mv "$SCRIPT_DIR/baseline_metrics.json.tmp" "$SCRIPT_DIR/baseline_metrics.json" || {
+                    log "WARNING: Failed to update baseline with pre-Solr count"
+                }
+            else
+                log "WARNING: Invalid count value '$pre_solr_upgrade_count', skipping baseline update"
+            fi
         fi
         
         upgrade_solr
@@ -4605,8 +5619,19 @@ main() {
     if [ -f "$SCRIPT_DIR/baseline_metrics.json" ]; then
         log ""
         log "📊 UPGRADE RESULTS SUMMARY:"
-        local final_index_count=$(curl -s "http://localhost:8983/solr/collection1/select?q=*:*&rows=0" 2>/dev/null | jq -r '.response.numFound' 2>/dev/null || echo "0")
-        local final_software_count=$(curl -s "http://localhost:8080/api/search?q=swContributorName:*" 2>/dev/null | jq -r '.data.total_count' 2>/dev/null || echo "0")
+        # Get final index count with better error handling
+        local final_solr_response=$(curl -s --max-time 10 "http://localhost:8983/solr/collection1/select?q=*:*&rows=0" 2>/dev/null)
+        local final_index_count="0"
+        if [ -n "$final_solr_response" ] && echo "$final_solr_response" | jq . >/dev/null 2>&1; then
+            final_index_count=$(echo "$final_solr_response" | jq -r '.response.numFound // 0' 2>/dev/null || echo "0")
+        fi
+        
+        # Get final software count with better error handling
+        local final_api_response=$(curl -s --max-time 10 "http://localhost:8080/api/search?q=swContributorName:*" 2>/dev/null)
+        local final_software_count="0"
+        if [ -n "$final_api_response" ] && echo "$final_api_response" | jq . >/dev/null 2>&1; then
+            final_software_count=$(echo "$final_api_response" | jq -r '.data.total_count // 0' 2>/dev/null || echo "0")
+        fi
         
         local baseline_index=$(jq -r '.pre_solr_upgrade_count // .pre_upgrade_index_count' "$SCRIPT_DIR/baseline_metrics.json" 2>/dev/null || echo "0")
         local baseline_software=$(jq -r '.pre_upgrade_software_count' "$SCRIPT_DIR/baseline_metrics.json" 2>/dev/null || echo "0")
@@ -4677,7 +5702,7 @@ run_final_validation() {
     
     # Validate database connectivity
     log "Validating database connectivity..."
-    if ! curl -s --max-time 15 "http://localhost:8080/api/info/server" > /dev/null 2>&1; then
+    if ! curl -s --max-time 15 "http://localhost:8080/api/info/server" 2> /dev/null; then
         validation_warnings+=("Database connectivity check inconclusive")
     fi
     
@@ -4756,9 +5781,9 @@ generate_upgrade_summary() {
     # Database and connectivity
     log ""
     log "🗄️  System Health:"
-    local db_responsive=$(curl -s --max-time 10 "http://localhost:8080/api/info/server" >/dev/null 2>&1 && echo "✓ Responsive" || echo "⚠️  Check needed")
+    local db_responsive=$(curl -s --max-time 10 "http://localhost:8080/api/info/server" 2>/dev/null >/dev/null 2>&1 && echo "✓ Responsive" || echo "⚠️  Check needed")
     log "  • Database: $db_responsive"
-    log "  • API Endpoint: $(curl -s --max-time 5 "http://localhost:8080/api/info/version" >/dev/null 2>&1 && echo "✓ Accessible" || echo "⚠️  Check needed")"
+    log "  • API Endpoint: $(curl -s --max-time 5 "http://localhost:8080/api/info/version" 2>/dev/null >/dev/null 2>&1 && echo "✓ Accessible" || echo "⚠️  Check needed")"
     
     # Index status
     log ""
