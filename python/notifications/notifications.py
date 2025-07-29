@@ -177,8 +177,11 @@ Also, check for your welcome email to verify your address.'
                 print(f"{message} {notification['sentTimestamp']}")
                 print()
             elif type == "ASSIGNROLE":
-                role = "FIXME---Admin/Dataverse + Dataset Creator---FIXME"
-                message = f'You have been granted the {role} role for <a href="/dataverse/root" title="Root">Root</a>.'
+                # message = f'You have been granted the Admin role for <a href="/dataverse/dv234b8d06" title="dv234b8d06">dv234b8d06</a>.'
+                role = notification["role"]
+                collection_name = notification["collectionName"]
+                collection_relative_url_to_root_with_spa = notification["collectionRelativeUrlToRootWithSpa"]
+                message = f'You have been granted the {role} role for <a href="{parent_collection_relative_url_to_root_with_spa}" title="{parent_collection_name}">{parent_collection_name}</a>.'
                 print(f"{message} {notification['sentTimestamp']}")
                 print()
 
