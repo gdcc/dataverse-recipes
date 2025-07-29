@@ -582,12 +582,9 @@ if ! id -u "$USER" >/dev/null 2>&1; then
         exit 1
     fi
 elif [ "$USER" != "$DATAVERSE_USER" ]; then
-    # Prompt user to confirm they want to continue
-    read -p "Current user is not $DATAVERSE_USER. This is not a big deal. Continue? (y/n): " CONTINUE
-    if [[ "$CONTINUE" != [Yy] ]]; then
-        log "Exiting."
-        exit 1
-    fi
+    log "WARNING: This script is being run as user '$USER', but the configured Dataverse user is '$DATAVERSE_USER'."
+    log "This is generally not recommended, but the script will attempt to continue."
+    log "Ensure that '$USER' has appropriate sudo permissions to act as '$DATAVERSE_USER' and manage system services."
 fi
 
 PAYARA_EXPORT_LINE="export PAYARA=\"$PAYARA\""
@@ -938,21 +935,14 @@ robust_sudo_execute() {
     local description="${2:-command}"
     local output_file="${3:-/dev/null}"
 
-    # Method 1: Standard sudo
+    # Method 1: Standard sudo with no output file
     if [ -z "$output_file" ]; then
         if sudo $command; then
             log "✓ Executed $description with sudo Method 1"
-            log "  Ran: sudo $command"
             return 0
         fi
     fi
 
-    # Method 2: sudo with bash -c
-    if sudo bash -c "$command" > "$output_file"; then
-        log "✓ Executed $description with sudo Method 2"
-        return 0
-    fi
-        
     # Method 2: sudo with bash -c
     if sudo bash -c "$command" > "$output_file"; then
         log "✓ Executed $description with sudo Method 2"
@@ -983,11 +973,11 @@ robust_sudo_execute() {
         fi
     elif [[ "$command" =~ "systemctl start solr" ]]; then
         # Try solr start script
-        if sudo -H bash -c "/usr/local/solr/bin/solr start" > "$output_file" 2>&1; then
+        if sudo -H bash -c "$SOLR_PATH/bin/solr start" > "$output_file" 2>&1; then
             return 0
-        elif sudo bash -c "/usr/local/solr/bin/solr start" > "$output_file" 2>&1; then
+        elif sudo bash -c "$SOLR_PATH/bin/solr start" > "$output_file" 2>&1; then
             return 0
-        elif /usr/local/solr/bin/solr start > "$output_file" 2>&1; then
+        elif "$SOLR_PATH/bin/solr" start > "$output_file" 2>&1; then
             return 0
         fi
     fi
@@ -1615,7 +1605,7 @@ check_current_version() {
             log "✓ Current version is already $TARGET_VERSION. No upgrade needed."
             log "This upgrade script is for $CURRENT_VERSION → $TARGET_VERSION only."
             log "Your system is already up to date."
-            return 1
+            exit 0
             
         # Case 3: ❌ Running a version that's too old for this upgrade
         elif version_compare "$version" "$CURRENT_VERSION"; then
@@ -1624,7 +1614,7 @@ check_current_version() {
             log "Please upgrade to $CURRENT_VERSION first using the appropriate script."
             log "Example upgrade path: 6.3 → 6.4 → 6.5 → 6.6"
             log "Exiting to prevent potential data corruption."
-            return 1
+            exit 1
             
         # Case 4: ❌ Running a version that's newer than target (unusual)
         elif version_compare "$TARGET_VERSION" "$version"; then
@@ -1632,14 +1622,14 @@ check_current_version() {
             log "This upgrade script is for $CURRENT_VERSION → $TARGET_VERSION only."
             log "You may need a different upgrade script or this is a development version."
             log "Exiting to prevent potential data corruption."
-            return 1
+            exit 1
             
         # Case 5: ❌ Unexpected version scenario
         else
             log "✗ ERROR: Unexpected version scenario. Current: $version, Expected: $CURRENT_VERSION, Target: $TARGET_VERSION"
             log "This upgrade script is for $CURRENT_VERSION → $TARGET_VERSION only."
             log "Exiting to prevent potential data corruption."
-            return 1
+            exit 1
         fi
     else
         log "✗ ERROR: Cannot determine current Dataverse version from API or deployed applications."

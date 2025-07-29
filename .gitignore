@@ -4,3 +4,6 @@
 **/*.log
 **/*.state
 **/*.bak
+**/downloads/*
+**/baseline_metrics.json
+.cursorignore
