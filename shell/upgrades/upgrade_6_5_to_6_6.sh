@@ -73,6 +73,37 @@ SOLR_SCHEMA_SHA256="2ff4d76aa6645abb7db5289ade5cff83185a849f790606c90abaa87f8b50
 SOLR_CONFIG_SHA256="f1b1402d5c5edc9fb5be78d05be86c2e82ae9e7014ec3d1e7cb1801a2b48f2a7"
 UPDATE_FIELDS_SHA256="de66d7baecc60fbe7846da6db104701317949b3a0f1ced5df3d3f6e34b634c7c"
 
+# Usage information
+show_usage() {
+    echo "Dataverse 6.5 to 6.6 Upgrade Script"
+    echo ""
+    echo "Usage: $0 [OPTIONS]"
+    echo ""
+    echo "OPTIONS:"
+    echo "  --troubleshoot-indexing    Run indexing diagnostic and troubleshooting"
+    echo "                              This will check database vs Solr consistency,"
+    echo "                              identify indexing errors, and provide"
+    echo "                              troubleshooting steps for common issues."
+    echo ""
+    echo "  --help                     Show this help message"
+    echo ""
+    echo "EXAMPLES:"
+    echo "  $0                         Run the full upgrade process"
+    echo "  $0 --troubleshoot-indexing Run indexing diagnostic only"
+    echo ""
+    echo "The indexing diagnostic will help identify issues like:"
+    echo "  • Datasets not appearing in search results"
+    echo "  • Schema configuration problems"
+    echo "  • Multi-valued field errors"
+    echo "  • Indexing service failures"
+}
+
+# Check for help argument
+if [[ "$1" == "--help" || "$1" == "-h" ]]; then
+    show_usage
+    exit 0
+fi
+
 # Get the directory where the script is located
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &> /dev/null && pwd)
 DOWNLOAD_CACHE_DIR="$SCRIPT_DIR/downloads"
@@ -2288,10 +2319,10 @@ upgrade_payara() {
         log "Cannot proceed with domain restoration without a backup."
         
         # Check if the original Payara is still available elsewhere
-        if [ -d "/usr/local/payara5" ]; then
-            log "Found /usr/local/payara5. Attempting to use as backup source..."
+        if [ -d "$PAYARA_OLD" ]; then
+            log "Found $PAYARA_OLD. Attempting to use as backup source..."
             sudo mv "$PAYARA/glassfish/domains/domain1" "$PAYARA/glassfish/domains/domain1_DIST"
-            sudo cp -r "/usr/local/payara5/glassfish/domains/domain1" "$PAYARA/glassfish/domains/"
+            sudo cp -r "$PAYARA_OLD/glassfish/domains/domain1" "$PAYARA/glassfish/domains/"
             check_error "Failed to restore domain configuration from payara5"
         elif [ -d "/usr/local/payara" ] && [ "/usr/local/payara" != "$PAYARA" ]; then
             log "Found /usr/local/payara. Attempting to use as backup source..."
@@ -3474,7 +3505,11 @@ upgrade_solr() {
         
         # Check if there are any solr-* directories that might have been created
         log "Checking for Solr installations in /usr/local:"
-        ls -la /usr/local/solr* 2>/dev/null | tee -a "$LOGFILE" || log "No solr* directories found"
+        # List Solr installation(s) using the SOLR_PATH variable and also check for other solr* directories for troubleshooting
+        log "Listing Solr installation(s) using SOLR_PATH: $SOLR_PATH"
+        ls -la "$SOLR_PATH" 2>/dev/null | tee -a "$LOGFILE" || log "No directory found at SOLR_PATH ($SOLR_PATH)"
+        log "Checking for other solr* directories in /usr/local (in case SOLR_PATH is a symlink):"
+        ls -la "$SOLR_PATH/*" 2>/dev/null | tee -a "$LOGFILE" || log "No solr* directories found in /usr/local"
         
         # Try to find any solr binary
         log "Searching for Solr binary:"
@@ -4349,7 +4384,7 @@ update_solr_custom_fields() {
             
             # Check if there are any solr-* directories in /usr/local
             log "Checking for Solr installations in /usr/local:"
-            ls -la /usr/local/solr* 2>/dev/null | tee -a "$LOGFILE" || log "No solr* directories found in /usr/local"
+            ls -la "$SOLR_PATH/*" 2>/dev/null | tee -a "$LOGFILE" || log "No solr* directories found in /usr/local"
             
             # Try to find the actual Solr binary
             log "Searching for Solr binary:"
@@ -4516,7 +4551,7 @@ add_fallback_custom_fields() {
     software_fields["swCodeRepositoryLink"]="${SOFTWARE_FIELD_SWCODEREPOSITORYLINK:-false}"
     software_fields["swDatePublished"]="${SOFTWARE_FIELD_SWDATEPUBLISHED:-false}"
     software_fields["howToCite"]="${SOFTWARE_FIELD_HOWTOCITE:-false}"
-    software_fields["swArtifactType"]="${SOFTWARE_FIELD_SWARTIFACTTYPE:-false}"
+    software_fields["swArtifactType"]="${SOFTWARE_FIELD_SWARTIFACTTYPE:-true}"
     software_fields["swInputOutputLink"]="${SOFTWARE_FIELD_SWINPUTOUTPUTLINK:-false}"
     software_fields["swIdentifier"]="${SOFTWARE_FIELD_SWIDENTIFIER:-false}"
     software_fields["swLicense"]="${SOFTWARE_FIELD_SWLICENSE:-false}"
@@ -5333,6 +5368,12 @@ EOF
 
 # Main execution function
 main() {
+    # Check for command-line arguments
+    if [[ "$1" == "--troubleshoot-indexing" ]]; then
+        troubleshoot_indexing
+        exit 0
+    fi
+    
     log "Starting Dataverse upgrade from $CURRENT_VERSION to $TARGET_VERSION"
     log "Log file: $LOGFILE"
     log "State file: $STATE_FILE"
@@ -5377,7 +5418,7 @@ main() {
         log "========================================"
         log "CRITICAL: Before proceeding with upgrade, ensure you have created backups:"
         log "1. Database backup: pg_dump -U dataverse dataverse > dataverse_backup.sql"
-        log "2. Configuration backup: sudo tar -czf dataverse_config_backup.tar.gz /usr/local/payara6 /usr/local/solr"
+        log "2. Configuration backup: sudo tar -czf dataverse_config_backup.tar.gz $PAYARA $SOLR_PATH"
         log "3. Any custom configurations or uploaded files"
         log "========================================"
         read -p "Have you created all necessary backups? (y/N): " HAS_BACKUP
@@ -5715,6 +5756,18 @@ run_final_validation() {
         log "✓ Solr index contains $solr_count documents"
     fi
     
+    # Validate database vs Solr indexing consistency
+    log "Validating database vs Solr indexing consistency..."
+    if ! verify_indexing_consistency; then
+        validation_warnings+=("Database vs Solr indexing consistency check failed")
+    fi
+    
+    # Check for indexing errors
+    log "Checking for indexing errors..."
+    if ! check_indexing_errors; then
+        validation_warnings+=("Indexing errors detected in logs")
+    fi
+    
     # Report validation results
     if [[ ${#validation_errors[@]} -gt 0 ]]; then
         log "❌ FINAL VALIDATION FAILED:"
@@ -5733,6 +5786,131 @@ run_final_validation() {
     
     log "✅ FINAL VALIDATION COMPLETED SUCCESSFULLY"
     return 0
+}
+
+# Function to verify database vs Solr indexing consistency
+verify_indexing_consistency() {
+    log "🔍 Verifying database vs Solr indexing consistency..."
+    
+    # Get database counts
+    local db_datasets=$(sudo -u postgres psql -d dvndb -t -c "SELECT COUNT(*) FROM dvobject WHERE dtype = 'Dataset';" 2>/dev/null | xargs || echo "0")
+    local db_published_datasets=$(sudo -u postgres psql -d dvndb -t -c "SELECT COUNT(*) FROM dvobject WHERE dtype = 'Dataset' AND publicationdate IS NOT NULL;" 2>/dev/null | xargs || echo "0")
+    local db_dataverses=$(sudo -u postgres psql -d dvndb -t -c "SELECT COUNT(*) FROM dvobject WHERE dtype = 'Dataverse';" 2>/dev/null | xargs || echo "0")
+    
+    # Get Solr counts
+    local solr_total=$(curl -s "http://localhost:8983/solr/collection1/select?q=*:*&rows=0" 2>/dev/null | jq -r '.response.numFound' 2>/dev/null || echo "0")
+    local solr_datasets=$(curl -s "http://localhost:8983/solr/collection1/select?q=dvObjectType:datasets&rows=0" 2>/dev/null | jq -r '.response.numFound' 2>/dev/null || echo "0")
+    local solr_dataverses=$(curl -s "http://localhost:8983/solr/collection1/select?q=dvObjectType:dataverses&rows=0" 2>/dev/null | jq -r '.response.numFound' 2>/dev/null || echo "0")
+    
+    # Log the counts
+    log "📊 Database Counts:"
+    log "  • Total Datasets: $db_datasets"
+    log "  • Published Datasets: $db_published_datasets"
+    log "  • Dataverses: $db_dataverses"
+    
+    log "🔍 Solr Index Counts:"
+    log "  • Total Documents: $solr_total"
+    log "  • Indexed Datasets: $solr_datasets"
+    log "  • Indexed Dataverses: $solr_dataverses"
+    
+    # Check for discrepancies
+    local dataset_discrepancy=$((db_published_datasets - solr_datasets))
+    local dataverse_discrepancy=$((db_dataverses - solr_dataverses))
+    
+    # Analyze the discrepancies more intelligently
+    if [ "$dataset_discrepancy" -eq 0 ] && [ "$dataverse_discrepancy" -eq 0 ]; then
+        log "✅ Indexing consistency verified - all published datasets and dataverses are indexed"
+        return 0
+    else
+        log "📊 INDEXING ANALYSIS:"
+        
+        # Dataset analysis
+        if [ "$dataset_discrepancy" -lt 0 ]; then
+            log "  ✅ Dataset indexing: EXCELLENT"
+            log "    • Solr has $((solr_datasets - db_published_datasets)) more datasets than published"
+            log "    • This is normal - Solr indexes ALL datasets (published + unpublished + drafts)"
+        elif [ "$dataset_discrepancy" -gt 0 ]; then
+            log "  ⚠️  Dataset discrepancy: $dataset_discrepancy published datasets not indexed"
+            log "    (Database: $db_published_datasets published, Solr: $solr_datasets indexed)"
+        else
+            log "  ✅ Dataset indexing: PERFECT"
+        fi
+        
+        # Dataverse analysis  
+        if [ "$dataverse_discrepancy" -eq 0 ]; then
+            log "  ✅ Dataverse indexing: PERFECT"
+        elif [ "$dataverse_discrepancy" -eq 1 ]; then
+            log "  ⚠️  Dataverse indexing: MINOR ISSUE"
+            log "    • Only 1 dataverse missing (likely newly created or temporary indexing issue)"
+            log "    (Database: $db_dataverses total, Solr: $solr_dataverses indexed)"
+        else
+            log "  ⚠️  Dataverse discrepancy: $dataverse_discrepancy dataverses not indexed"
+            log "    (Database: $db_dataverses total, Solr: $solr_dataverses indexed)"
+        fi
+        
+        # Provide troubleshooting steps
+        log ""
+        log "🔧 TROUBLESHOOTING STEPS:"
+        log "  1. Check for indexing errors in Payara logs:"
+        log "     tail -50 $PAYARA/glassfish/domains/domain1/logs/server.log"
+        log "  2. Verify Solr schema configuration:"
+        log "     grep -i 'multiValued' $SOLR_PATH/server/solr/collection1/conf/schema.xml"
+        log "  3. Check for specific dataset indexing failures:"
+        log "     grep 'ERROR.*dataset_' $PAYARA/glassfish/domains/domain1/logs/server.log"
+        log "  4. Trigger manual reindex if needed:"
+        log "     curl \"http://localhost:8080/api/admin/index/clear\""
+        log "     curl \"http://localhost:8080/api/admin/index\""
+        return 1
+    fi
+}
+
+# Function to check for specific indexing errors
+check_indexing_errors() {
+    log "🔍 Checking for indexing errors in recent logs..."
+    
+    local error_count=$(sudo grep -c "ERROR.*dataset_" "$PAYARA/glassfish/domains/domain1/logs/server.log" 2>/dev/null || echo "0")
+    local multi_valued_errors=$(sudo grep -c "multiple values encountered for non multiValued field" "$PAYARA/glassfish/domains/domain1/logs/server.log" 2>/dev/null || echo "0")
+    
+    # Clean the values to ensure they are integers
+    error_count=$(echo "$error_count" | tr -d '\n\r\t ' | head -1)
+    multi_valued_errors=$(echo "$multi_valued_errors" | tr -d '\n\r\t ' | head -1)
+    
+    # Validate that they are integers
+    if ! [[ "$error_count" =~ ^[0-9]+$ ]]; then
+        error_count="0"
+    fi
+    if ! [[ "$multi_valued_errors" =~ ^[0-9]+$ ]]; then
+        multi_valued_errors="0"
+    fi
+    
+    if [ "$error_count" -eq 0 ] && [ "$multi_valued_errors" -eq 0 ]; then
+        log "✅ No indexing errors detected in recent logs"
+        return 0
+    else
+        log "⚠️  INDEXING ERRORS DETECTED:"
+        log "  • Total dataset indexing errors: $error_count"
+        log "  • Multi-valued field errors: $multi_valued_errors"
+        
+        if [ "$multi_valued_errors" -gt 0 ]; then
+            log ""
+            log "🔧 MULTI-VALUED FIELD ERROR DETECTED:"
+            log "  This indicates schema configuration issues. Common fixes:"
+            log "  1. Check schema.xml for fields that should be multiValued=\"true\":"
+            log "     sudo grep -A 2 -B 2 'multiValued=\"false\"' $SOLR_PATH/server/solr/collection1/conf/schema.xml"
+            log "  2. Update problematic fields to multiValued=\"true\""
+            log "  3. Restart Solr: sudo systemctl restart solr"
+            log "  4. Clear and rebuild index"
+        fi
+        
+        # Show recent errors
+        log ""
+        log "📋 Recent indexing errors:"
+        sudo grep "ERROR.*dataset_" "$PAYARA/glassfish/domains/domain1/logs/server.log" 2>/dev/null | tail -3 | while read -r line; do
+            log "  • $line"
+        done
+        
+        return 1
+    fi
 }
 
 # Function to generate upgrade summary report
@@ -5825,6 +6003,57 @@ generate_upgrade_summary() {
     
     log "========================================="
     log "✅ UPGRADE SUMMARY COMPLETE"
+    log "========================================="
+}
+
+# Standalone function for troubleshooting indexing issues
+troubleshoot_indexing() {
+    log "========================================="
+    log "🔍 INDEXING TROUBLESHOOTING DIAGNOSTIC"
+    log "========================================="
+    
+    # Check service status
+    log "📋 Service Status:"
+    local payara_status=$(systemctl is-active payara 2>/dev/null || echo "unknown")
+    local solr_status=$(systemctl is-active solr 2>/dev/null || echo "unknown")
+    log "  • Payara: $payara_status"
+    log "  • Solr: $solr_status"
+    
+    # Run indexing consistency check
+    log ""
+    verify_indexing_consistency
+    
+    # Check for indexing errors
+    log ""
+    check_indexing_errors
+    
+    # Check recent indexing activity
+    log ""
+    log "📊 Recent Indexing Activity:"
+    local recent_indexing=$(sudo grep "indexing dataset" "$PAYARA/glassfish/domains/domain1/logs/server.log" 2>/dev/null | tail -5 || echo "No recent indexing activity found")
+    if [[ "$recent_indexing" != "No recent indexing activity found" ]]; then
+        echo "$recent_indexing" | while read -r line; do
+            log "  • $line"
+        done
+    else
+        log "  • $recent_indexing"
+    fi
+    
+    # Check Solr schema for potential issues
+    log ""
+    log "🔧 Solr Schema Analysis:"
+    local problematic_fields=$(sudo grep -A 2 -B 2 'multiValued="false"' "$SOLR_PATH/server/solr/collection1/conf/schema.xml" 2>/dev/null | grep -E "(sw|software|artifact)" | head -5 || echo "No potentially problematic fields found")
+    if [[ "$problematic_fields" != "No potentially problematic fields found" ]]; then
+        log "  ⚠️  Potentially problematic fields (check if these should be multiValued=\"true\"):"
+        echo "$problematic_fields" | while read -r line; do
+            log "    • $line"
+        done
+    else
+        log "  • $problematic_fields"
+    fi
+    
+    log "========================================="
+    log "✅ INDEXING DIAGNOSTIC COMPLETE"
     log "========================================="
 }
 
