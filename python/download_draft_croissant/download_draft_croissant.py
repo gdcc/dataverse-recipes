@@ -78,7 +78,7 @@ def main():
 
 
 def construct_url(base_url, pid):
-    return f"{base_url}/api/datasets/export?exporter=croissant&persistentId={pid}&version=:draft"
+    return f"{base_url.rstrip("/")}/api/datasets/export?exporter=croissant&persistentId={pid}&version=:draft"
 
 
 def fetch_croissant(url, api_token):
