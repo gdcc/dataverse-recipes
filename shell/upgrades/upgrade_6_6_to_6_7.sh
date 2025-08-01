@@ -8,21 +8,22 @@
 # upgrade process.
 
 # Version information
-TARGET_VERSION="6.7"
+TARGET_VERSION="6.7.1"
 CURRENT_VERSION="6.6"
 PAYARA_VERSION="6.2025.3"
 SOLR_VERSION="9.8.0" # No change from v6.6
 REQUIRED_JAVA_VERSION="11" # No change from v6.6
 
-# URLs for downloading files
+# URLs for downloading files. Please note there's a mismatch between the WAR file version number. 
+# The WAR file is 6.7.1, but ppaths for the other files are 6.7.
 PAYARA_DOWNLOAD_URL="https://nexus.payara.fish/repository/payara-community/fish/payara/distributions/payara/6.2025.3/payara-6.2025.3.zip"
-DATAVERSE_WAR_URL="https://github.com/IQSS/dataverse/releases/download/v6.7/dataverse-6.7.war"
+DATAVERSE_WAR_URL="https://github.com/IQSS/dataverse/releases/download/v6.7.1/dataverse-6.7.1.war"
 SOLR_SCHEMA_URL="https://raw.githubusercontent.com/IQSS/dataverse/v6.7/conf/solr/schema.xml"
 UPDATE_FIELDS_URL="https://raw.githubusercontent.com/IQSS/dataverse/v6.7/conf/solr/update-fields.sh"
 
 # SHA256 checksums for verification
 PAYARA_SHA256="88f5c1e5b40ea4bc60ae3e34e6858c1b33145dc06c4b05c3d318ed67c131e210"
-DATAVERSE_WAR_SHA256="2c71e7a238daf09bd9854b1c235192eb1e9eacb3cb912150f872e63fd4e5166f"
+DATAVERSE_WAR_SHA256="fd8d6010886e8a717bfa3d71c641a184004ad5c24d4d1f889294bd5b7c20b809"
 SOLR_SCHEMA_SHA256="6acc401c367293112179ad80bac8230435abb542e9cfb7dc637fbabbb674d436"
 UPDATE_FIELDS_SHA256="de66d7baecc60fbe7846da6db104701317949b3a0f1ced5df3d3f6e34b634c7c"
 
