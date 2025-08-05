@@ -61,17 +61,32 @@ show_usage() {
     echo "                              identify indexing errors, and provide"
     echo "                              troubleshooting steps for common issues."
     echo ""
+    echo "  --migrate-cors             Migrate CORS settings from database to JVM options"
+    echo "                              This addresses CORS errors when uploading folders"
+    echo "                              and follows the Filter-efficiency.md guidelines."
+    echo ""
+    echo "  --fix-uploader-cors        Fix CORS issues specifically for Dataverse Uploader"
+    echo "                              This addresses CORS errors from gdcc.github.io"
+    echo "                              and ensures proper CORS headers for preflight requests."
+    echo ""
     echo "  --help                     Show this help message"
     echo ""
     echo "EXAMPLES:"
     echo "  $0                         Run the full upgrade process"
     echo "  $0 --troubleshoot-indexing Run indexing diagnostic only"
+    echo "  $0 --migrate-cors          Migrate CORS settings only"
+    echo "  $0 --fix-uploader-cors     Fix Dataverse Uploader CORS issues only"
     echo ""
     echo "The indexing diagnostic will help identify issues like:"
     echo "  • Datasets not appearing in search results"
     echo "  • Schema configuration problems"
     echo "  • Multi-valued field errors"
     echo "  • Indexing service failures"
+    echo ""
+    echo "The CORS migration will help resolve issues like:"
+    echo "  • CORS errors when uploading folders"
+    echo "  • Browser blocking of API requests"
+    echo "  • Cross-origin resource sharing problems"
 }
 
 # Check for help argument
@@ -127,36 +142,39 @@ if [[ "$1" == "--reset" ]]; then
     exit 0
 fi
 
-# Load environment variables from .env file
-if [[ -f "$SCRIPT_DIR/.env" ]]; then
-    source "$SCRIPT_DIR/.env"
-    log "Loaded environment variables from .env file"
-else
-    log "❌ Error: .env file not found. Please create one based on sample.env"
-    exit 1
-fi
-
-# Required variables check
-required_vars=(
-    "DOMAIN" "PAYARA" "DATAVERSE_USER" "WAR_FILE_LOCATION"
-    "SOLR_PATH" "SOLR_USER"
-)
-# Optional variables for database operations
-optional_vars=(
-    "DB_USER" "DB_NAME"
-)
-for var in "${required_vars[@]}"; do
-    if [[ -z "${!var}" ]]; then
-        log "❌ Error: Required environment variable $var is not set in .env file."
+# Function to load environment variables
+load_environment() {
+    # Load environment variables from .env file
+    if [[ -f "$SCRIPT_DIR/.env" ]]; then
+        source "$SCRIPT_DIR/.env"
+        log "Loaded environment variables from .env file"
+    else
+        log "❌ Error: .env file not found. Please create one based on sample.env"
         exit 1
     fi
-done
 
-# Ensure the script is not run as root
-if [[ $EUID -eq 0 ]]; then
-    log "Please do not run this script as root."
-    exit 1
-fi
+    # Required variables check
+    required_vars=(
+        "DOMAIN" "PAYARA" "DATAVERSE_USER" "WAR_FILE_LOCATION"
+        "SOLR_PATH" "SOLR_USER"
+    )
+    # Optional variables for database operations
+    optional_vars=(
+        "DB_USER" "DB_NAME"
+    )
+    for var in "${required_vars[@]}"; do
+        if [[ -z "${!var}" ]]; then
+            log "❌ Error: Required environment variable $var is not set in .env file."
+            exit 1
+        fi
+    done
+
+    # Ensure the script is not run as root
+    if [[ $EUID -eq 0 ]]; then
+        log "Please do not run this script as root."
+        exit 1
+    fi
+}
 
 # Cleanup functions
 cleanup_on_error() {
@@ -332,6 +350,53 @@ deploy_dataverse() {
     done
 }
 
+# Function to check if CORS migration is needed
+check_cors_migration_needed() {
+    log "Checking if CORS migration is needed..."
+    
+    local jvm_options
+    jvm_options=$(sudo -u "$DATAVERSE_USER" "$PAYARA/bin/asadmin" list-jvm-options)
+    
+    # Check if new CORS JVM options exist
+    local has_cors_origin=false
+    local has_cors_methods=false
+    local has_cors_headers=false
+    local has_cors_expose=false
+    
+    if echo "$jvm_options" | grep -q "dataverse.cors.origin"; then
+        has_cors_origin=true
+    fi
+    
+    if echo "$jvm_options" | grep -q "dataverse.cors.methods"; then
+        has_cors_methods=true
+    fi
+    
+    if echo "$jvm_options" | grep -q "dataverse.cors.headers.allow"; then
+        has_cors_headers=true
+    fi
+    
+    if echo "$jvm_options" | grep -q "dataverse.cors.headers.expose"; then
+        has_cors_expose=true
+    fi
+    
+    if [[ "$has_cors_origin" == "true" && "$has_cors_methods" == "true" && "$has_cors_headers" == "true" && "$has_cors_expose" == "true" ]]; then
+        log "✓ CORS JVM options already configured."
+        return 0
+    fi
+    
+    # Check if old database settings exist
+    local allow_cors
+    allow_cors=$(curl -s http://localhost:8080/api/admin/settings/:AllowCors 2>/dev/null || echo "null")
+    
+    if [[ "$allow_cors" == "true" || "$allow_cors" == "null" || "$allow_cors" == "{}" || -z "$allow_cors" ]]; then
+        log "⚠️  CORS migration needed: AllowCors is enabled but JVM options not set"
+        return 1
+    else
+        log "✓ CORS migration not needed: AllowCors is disabled"
+        return 0
+    fi
+}
+
 # Function to migrate API filters
 migrate_api_filters() {
     log "Migrating API filter settings from database to JVM options..."
@@ -339,8 +404,21 @@ migrate_api_filters() {
     # Check if new settings already exist
     local jvm_options
     jvm_options=$(sudo -u "$DATAVERSE_USER" "$PAYARA/bin/asadmin" list-jvm-options)
+    
+    # Check for both API blocked policy and CORS settings
+    local has_api_settings=false
+    local has_cors_settings=false
+    
     if echo "$jvm_options" | grep -q "dataverse.api.blocked.policy"; then
-        log "API filter JVM options already seem to be configured. Skipping migration."
+        has_api_settings=true
+    fi
+    
+    if echo "$jvm_options" | grep -q "dataverse.cors.origin"; then
+        has_cors_settings=true
+    fi
+    
+    if [[ "$has_api_settings" == "true" && "$has_cors_settings" == "true" ]]; then
+        log "API filter and CORS JVM options already configured. Skipping migration."
         return 0
     fi
 
@@ -370,14 +448,47 @@ migrate_api_filters() {
     local blocked_key
     blocked_key=$(curl -s http://localhost:8080/api/admin/settings/:BlockedApiKey)
 
-    if [[ "$allow_cors" != "true" ]]; then
-        log "Setting CORS origin..."
+    # Handle CORS configuration according to Filter-efficiency.md
+    # If :AllowCors is not set or is true, set CORS origin to *
+    if [[ "$allow_cors" == "true" || "$allow_cors" == "null" || "$allow_cors" == "{}" || -z "$allow_cors" ]]; then
+        log "Setting CORS configuration (allowing all origins)..."
+        
+        # Set CORS origin - include gdcc.github.io for Dataverse Uploader compatibility
         if ! echo "$jvm_options" | grep -q "dataverse.cors.origin"; then
-            sudo -u "$DATAVERSE_USER" "$PAYARA/bin/asadmin" create-jvm-options "-Ddataverse.cors.origin=*"
+            sudo -u "$DATAVERSE_USER" "$PAYARA/bin/asadmin" create-jvm-options "-Ddataverse.cors.origin=*,https://gdcc.github.io"
             check_error "Failed to set CORS origin"
         else
             log "CORS origin JVM option already exists. Skipping."
         fi
+        
+        # Set CORS methods (optional, defaults to common methods)
+        if ! echo "$jvm_options" | grep -q "dataverse.cors.methods"; then
+            sudo -u "$DATAVERSE_USER" "$PAYARA/bin/asadmin" create-jvm-options "-Ddataverse.cors.methods=GET,POST,PUT,DELETE,OPTIONS"
+            check_error "Failed to set CORS methods"
+        else
+            log "CORS methods JVM option already exists. Skipping."
+        fi
+        
+        # Set CORS allowed headers (optional, includes common headers)
+        if ! echo "$jvm_options" | grep -q "dataverse.cors.headers.allow"; then
+            sudo -u "$DATAVERSE_USER" "$PAYARA/bin/asadmin" create-jvm-options "-Ddataverse.cors.headers.allow=Content-Type,X-Requested-With,Accept,Origin,Access-Control-Request-Method,Access-Control-Request-Headers,X-Dataverse-key,X-Dataverse-unblock-key"
+            check_error "Failed to set CORS allowed headers"
+        else
+            log "CORS allowed headers JVM option already exists. Skipping."
+        fi
+        
+        # Set CORS exposed headers (important for Dataverse Uploader)
+        if ! echo "$jvm_options" | grep -q "dataverse.cors.headers.expose"; then
+            sudo -u "$DATAVERSE_USER" "$PAYARA/bin/asadmin" create-jvm-options "-Ddataverse.cors.headers.expose=Access-Control-Allow-Origin,Access-Control-Allow-Methods,Access-Control-Allow-Headers,X-Dataverse-key,X-Dataverse-unblock-key"
+            check_error "Failed to set CORS exposed headers"
+        else
+            log "CORS exposed headers JVM option already exists. Skipping."
+        fi
+        
+    else
+        log "CORS is currently disabled (AllowCors=$allow_cors). CORS configuration not set."
+        log "If you need CORS enabled, you can manually set it later with:"
+        log "  sudo -u $DATAVERSE_USER $PAYARA/bin/asadmin create-jvm-options '-Ddataverse.cors.origin=*'"
     fi
 
     if [ -n "$blocked_endpoints" ] && [ "$blocked_endpoints" != "{}" ]; then
@@ -432,6 +543,42 @@ migrate_api_filters() {
     start_service "payara"
     log "Waiting for Payara to fully start after API filter migration..."
     sleep 30
+    
+    # Verify the migration was successful
+    log "Verifying migration results..."
+    local final_jvm_options
+    final_jvm_options=$(sudo -u "$DATAVERSE_USER" "$PAYARA/bin/asadmin" list-jvm-options)
+    
+    log "📋 Migration Summary:"
+    if echo "$final_jvm_options" | grep -q "dataverse.cors.origin"; then
+        log "  ✅ CORS origin configured"
+    else
+        log "  ⚠️  CORS origin not configured"
+    fi
+    
+    if echo "$final_jvm_options" | grep -q "dataverse.cors.methods"; then
+        log "  ✅ CORS methods configured"
+    fi
+    
+    if echo "$final_jvm_options" | grep -q "dataverse.cors.headers.allow"; then
+        log "  ✅ CORS allowed headers configured"
+    fi
+    
+    if echo "$final_jvm_options" | grep -q "dataverse.cors.headers.expose"; then
+        log "  ✅ CORS exposed headers configured"
+    fi
+    
+    if echo "$final_jvm_options" | grep -q "dataverse.api.blocked.endpoints"; then
+        log "  ✅ API blocked endpoints configured"
+    fi
+    
+    if echo "$final_jvm_options" | grep -q "dataverse.api.blocked.policy"; then
+        log "  ✅ API blocked policy configured"
+    fi
+    
+    if echo "$final_jvm_options" | grep -q "dataverse.api.blocked.key"; then
+        log "  ✅ API blocked key configured"
+    fi
 }
 
 # Function to update content type for VTT files
@@ -737,6 +884,182 @@ check_indexing_errors() {
     fi
 }
 
+# Function to check Dataverse Uploader CORS compatibility
+check_uploader_cors() {
+    log "🔍 Checking Dataverse Uploader CORS compatibility..."
+    
+    # Test CORS headers for gdcc.github.io
+    local cors_test=$(curl -s -I -H "Origin: https://gdcc.github.io" \
+        -H "Access-Control-Request-Method: GET" \
+        -H "Access-Control-Request-Headers: X-Dataverse-key" \
+        -X OPTIONS \
+        "http://localhost:8080/api/info/version" 2>/dev/null)
+    
+    if echo "$cors_test" | grep -q "Access-Control-Allow-Origin"; then
+        log "✅ CORS headers are properly set for Dataverse Uploader"
+        return 0
+    else
+        log "⚠️  CORS headers may not be properly configured for Dataverse Uploader"
+        return 1
+    fi
+}
+
+# Function to fix Dataverse Uploader CORS issues
+fix_uploader_cors() {
+    log "========================================="
+    log "🔧 DATAVERSE UPLOADER CORS FIX"
+    log "========================================="
+    
+    # Check service status
+    log "📋 Service Status:"
+    local payara_status=$(systemctl is-active payara 2>/dev/null || echo "unknown")
+    log "  • Payara: $payara_status"
+    
+    if [[ "$payara_status" != "active" ]]; then
+        log "❌ ERROR: Payara is not running. Please start Payara first:"
+        log "  sudo systemctl start payara"
+        return 1
+    fi
+    
+    log "🔍 Current CORS configuration:"
+    local jvm_options
+    jvm_options=$(sudo -u "$DATAVERSE_USER" "$PAYARA/bin/asadmin" list-jvm-options)
+    
+    # Check current CORS settings
+    if echo "$jvm_options" | grep -q "dataverse.cors.origin"; then
+        log "  ✅ CORS origin is configured"
+        local current_origin=$(echo "$jvm_options" | grep "dataverse.cors.origin" | sed 's/.*dataverse.cors.origin=//')
+        log "  📍 Current origin setting: $current_origin"
+    else
+        log "  ❌ CORS origin is not configured"
+    fi
+    
+    if echo "$jvm_options" | grep -q "dataverse.cors.headers.expose"; then
+        log "  ✅ CORS exposed headers are configured"
+    else
+        log "  ❌ CORS exposed headers are not configured"
+    fi
+    
+    # Test current CORS functionality
+    log ""
+    log "🔍 Testing current CORS functionality..."
+    if check_uploader_cors; then
+        log "✅ CORS is working correctly for Dataverse Uploader"
+        log "No fixes needed."
+        return 0
+    fi
+    
+    log "⚠️  CORS issues detected. Applying fixes..."
+    
+    # Ensure CORS origin includes gdcc.github.io
+    if ! echo "$jvm_options" | grep -q "dataverse.cors.origin"; then
+        log "Setting CORS origin to include gdcc.github.io..."
+        sudo -u "$DATAVERSE_USER" "$PAYARA/bin/asadmin" create-jvm-options "-Ddataverse.cors.origin=*,https://gdcc.github.io"
+        check_error "Failed to set CORS origin"
+    else
+        local current_origin=$(echo "$jvm_options" | grep "dataverse.cors.origin" | sed 's/.*dataverse.cors.origin=//')
+        if [[ "$current_origin" != "*" && "$current_origin" != *"gdcc.github.io"* ]]; then
+            log "Updating CORS origin to include gdcc.github.io..."
+            sudo -u "$DATAVERSE_USER" "$PAYARA/bin/asadmin" delete-jvm-options "-Ddataverse.cors.origin=$current_origin"
+            sudo -u "$DATAVERSE_USER" "$PAYARA/bin/asadmin" create-jvm-options "-Ddataverse.cors.origin=*,https://gdcc.github.io"
+            check_error "Failed to update CORS origin"
+        fi
+    fi
+    
+    # Ensure CORS exposed headers are set
+    if ! echo "$jvm_options" | grep -q "dataverse.cors.headers.expose"; then
+        log "Setting CORS exposed headers..."
+        sudo -u "$DATAVERSE_USER" "$PAYARA/bin/asadmin" create-jvm-options "-Ddataverse.cors.headers.expose=Access-Control-Allow-Origin,Access-Control-Allow-Methods,Access-Control-Allow-Headers,X-Dataverse-key,X-Dataverse-unblock-key"
+        check_error "Failed to set CORS exposed headers"
+    fi
+    
+    # Restart Payara to apply changes
+    log "Restarting Payara to apply CORS fixes..."
+    stop_service "payara"
+    start_service "payara"
+    log "Waiting for Payara to fully start..."
+    sleep 30
+    
+    # Test the fix
+    log ""
+    log "🔍 Testing CORS fix..."
+    if check_uploader_cors; then
+        log "✅ CORS fix successful! Dataverse Uploader should now work."
+    else
+        log "⚠️  CORS fix may not be complete. Please check:"
+        log "  1. Browser developer console for specific error messages"
+        log "  2. Payara logs: tail -50 $PAYARA/glassfish/domains/domain1/logs/server.log"
+        log "  3. Manual test: curl -I -H 'Origin: https://gdcc.github.io' http://localhost:8080/api/info/version"
+    fi
+    
+    log "========================================="
+    log "✅ DATAVERSE UPLOADER CORS FIX COMPLETE"
+    log "========================================="
+}
+
+# Standalone function for CORS migration
+migrate_cors_standalone() {
+    log "========================================="
+    log "🌐 CORS MIGRATION UTILITY"
+    log "========================================="
+    
+    # Check service status
+    log "📋 Service Status:"
+    local payara_status=$(systemctl is-active payara 2>/dev/null || echo "unknown")
+    log "  • Payara: $payara_status"
+    
+    if [[ "$payara_status" != "active" ]]; then
+        log "❌ ERROR: Payara is not running. Please start Payara first:"
+        log "  sudo systemctl start payara"
+        return 1
+    fi
+    
+    # Check if migration is needed
+    log ""
+    if check_cors_migration_needed; then
+        log "✅ CORS migration not needed - settings are already properly configured."
+        
+        # Still check Dataverse Uploader compatibility
+        log ""
+        check_uploader_cors
+        
+        return 0
+    fi
+    
+    log "⚠️  CORS migration is needed. This will:"
+    log "  • Check current CORS settings in database"
+    log "  • Migrate settings to JVM options (more efficient)"
+    log "  • Restart Payara to apply changes"
+    log "  • Clean up old database settings"
+    log "  • Test Dataverse Uploader compatibility"
+    log ""
+    read -p "Do you want to proceed with CORS migration? (y/N): " confirm
+    if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
+        log "CORS migration cancelled."
+        return 0
+    fi
+    
+    # Run the migration
+    log ""
+    migrate_api_filters
+    
+    # Test Dataverse Uploader compatibility after migration
+    log ""
+    log "Testing Dataverse Uploader compatibility..."
+    sleep 10  # Give Payara time to fully start
+    check_uploader_cors
+    
+    log "========================================="
+    log "✅ CORS MIGRATION COMPLETE"
+    log "========================================="
+    log ""
+    log "If you're still experiencing CORS errors, check:"
+    log "  1. Browser developer console for specific error messages"
+    log "  2. Payara logs: tail -50 $PAYARA/glassfish/domains/domain1/logs/server.log"
+    log "  3. Verify JVM options: sudo -u $DATAVERSE_USER $PAYARA/bin/asadmin list-jvm-options | grep cors"
+    log "  4. Test CORS manually: curl -I -H 'Origin: https://gdcc.github.io' http://localhost:8080/api/info/version"
+}
+
 # Standalone function for troubleshooting indexing issues
 troubleshoot_indexing() {
     log "========================================="
@@ -790,12 +1113,8 @@ troubleshoot_indexing() {
 
 # Main execution function
 main() {
-    # Check for command-line arguments
-    if [[ "$1" == "--troubleshoot-indexing" ]]; then
-        troubleshoot_indexing
-        exit 0
-    fi
-    
+    # Only proceed with version check for full upgrade
+    load_environment
     log "Starting Dataverse upgrade from $CURRENT_VERSION to $TARGET_VERSION..."
     
     if ! is_step_completed "PREFLIGHT_CHECKS"; then
@@ -872,5 +1191,23 @@ main() {
 
     log "✅ Dataverse upgrade to $TARGET_VERSION completed successfully!"
 }
+
+# Check for command-line arguments first (before calling main)
+if [[ "$1" == "--troubleshoot-indexing" ]]; then
+    troubleshoot_indexing
+    exit 0
+fi
+
+if [[ "$1" == "--migrate-cors" ]]; then
+    load_environment
+    migrate_cors_standalone
+    exit 0
+fi
+
+if [[ "$1" == "--fix-uploader-cors" ]]; then
+    load_environment
+    fix_uploader_cors
+    exit 0
+fi
 
 main
