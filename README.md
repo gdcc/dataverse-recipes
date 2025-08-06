@@ -30,6 +30,7 @@ In the following sections, you can find a list of available recipes for each lan
 ### Python 🐍
 
 - [Create datasets from Excel files](python/create_datasets_from_excel) 📊
+- [Download Croissant from draft dataset](python/download_draft_croissant)
 - [Create Croissant from the client side](python/create_croissant_client_side)
 
 ### Shell 🐚
@@ -38,6 +39,15 @@ In the following sections, you can find a list of available recipes for each lan
 - [Download files from a dataset](shell/download)
 - [Upgrade Dataverse](shell/upgrades)
 - [Testing](shell/testing)
+
+### DVCLI 🛠️
+
+- [Authentication](dvcli/authentication.sh)
+- [Collection Management](dvcli/collections)
+- [Dataset Management](dvcli/datasets)
+- [File Management](dvcli/files)
+- [Search](dvcli/search)
+- [Administration](dvcli/admin)
 
 ## 🤝 Contributing
 
