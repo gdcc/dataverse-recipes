@@ -1,3 +1,9 @@
 .env
 **/.env
+*.log
 **/*.log
+**/*.state
+**/*.bak
+**/downloads/*
+**/baseline_metrics.json
+.cursorignore
