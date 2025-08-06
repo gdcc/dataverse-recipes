@@ -876,11 +876,21 @@ enable_metadata_source_facet() {
     read -p "Do you want to enable the metadata source facet for harvested content? (y/n): " ENABLE_FACET
     
     if [[ "$ENABLE_FACET" =~ ^[Yy]$ ]]; then
-        if sudo -u "$DATAVERSE_USER" "$PAYARA/bin/asadmin" list-jvm-options | grep -q 'dataverse.feature.index-harvested-metadata-source=true'; then
+        local CURRENT_OPTS
+        CURRENT_OPTS=$(sudo -u "$DATAVERSE_USER" "$PAYARA/bin/asadmin" list-jvm-options 2>/dev/null || echo "")
+        if echo "$CURRENT_OPTS" | grep -q 'dataverse.feature.index-harvested-metadata-source=true' 2>/dev/null; then
             log "Metadata source facet JVM option already exists."
         else
             log "Enabling metadata source facet..."
-            sudo -u "$DATAVERSE_USER" "$PAYARA/bin/asadmin" create-jvm-options "-Ddataverse.feature.index-harvested-metadata-source=true" || return 1
+            # Use create-jvm-options with error handling - it will fail gracefully if option already exists
+            if sudo -u "$DATAVERSE_USER" "$PAYARA/bin/asadmin" create-jvm-options "-Ddataverse.feature.index-harvested-metadata-source=true" 2>&1 | grep -q "already exists"; then
+                log "Metadata source facet JVM option already exists (detected during creation)."
+            elif [ $? -ne 0 ]; then
+                log "ERROR: Failed to add metadata source facet JVM option."
+                return 1
+            else
+                log "Successfully added metadata source facet JVM option."
+            fi
             log "Metadata source facet enabled. A reindex will be required."
         fi
         REINDEX_REQUIRED=true
@@ -905,14 +915,23 @@ enable_solr_optimizations() {
             "-Ddataverse.feature.reduce-solr-deletes=true"
         )
         local CURRENT_OPTS
-        CURRENT_OPTS=$(sudo -u "$DATAVERSE_USER" "$PAYARA/bin/asadmin" list-jvm-options)
+        CURRENT_OPTS=$(sudo -u "$DATAVERSE_USER" "$PAYARA/bin/asadmin" list-jvm-options 2>/dev/null || echo "")
 
         for OPT in "${OPTS_TO_ADD[@]}"; do
-            if echo "$CURRENT_OPTS" | grep -qF "$OPT"; then
+            # Check if option exists by searching in the captured output
+            if echo "$CURRENT_OPTS" | grep -qF "$OPT" 2>/dev/null; then
                 log "Solr optimization JVM option already exists: $OPT"
             else
                 log "Adding Solr optimization JVM option: $OPT"
-                sudo -u "$DATAVERSE_USER" "$PAYARA/bin/asadmin" create-jvm-options "$OPT" || return 1
+                # Use create-jvm-options with error handling - it will fail gracefully if option already exists
+                if sudo -u "$DATAVERSE_USER" "$PAYARA/bin/asadmin" create-jvm-options "$OPT" 2>&1 | grep -q "already exists"; then
+                    log "Solr optimization JVM option already exists (detected during creation): $OPT"
+                elif [ $? -ne 0 ]; then
+                    log "ERROR: Failed to add Solr optimization JVM option: $OPT"
+                    return 1
+                else
+                    log "Successfully added Solr optimization JVM option: $OPT"
+                fi
             fi
         done
 
@@ -948,18 +967,69 @@ reindex_solr() {
             return 0
         fi
     fi
+    
+    # Wait a bit for reindexing to start
     sleep 10
-    while true; do
-        DATASET_COUNT_AFTER_REINDEX=$(curl "http://localhost:8983/solr/admin/cores?wt=json" | jq .status.collection1.index.maxDoc)
-        log "There are $DATASET_COUNT_AFTER_REINDEX datasets in the database after reindexing. Waiting for reindexing to finish all $DATASET_COUNT documents."
-        echo ""
-        # Greater than or equal to
-        if [ "$DATASET_COUNT_AFTER_REINDEX" -ge "$DATASET_COUNT" ]; then
-            log "Reindexing has finished."
-            break
+    
+    # Monitor reindexing progress with timeout and better logic
+    local MAX_WAIT_TIME=3600  # 1 hour timeout
+    local WAIT_COUNTER=0
+    local STABLE_COUNT=0
+    local LAST_COUNT=0
+    local STABLE_THRESHOLD=30  # Consider stable if count doesn't change for 30 seconds
+    
+    log "Monitoring reindexing progress (timeout: $MAX_WAIT_TIME seconds)..."
+    
+    while [ $WAIT_COUNTER -lt $MAX_WAIT_TIME ]; do
+        local CURRENT_COUNT
+        CURRENT_COUNT=$(curl -s "http://localhost:8983/solr/admin/cores?wt=json" 2>/dev/null | jq -r '.status.collection1.index.maxDoc' 2>/dev/null || echo "0")
+        
+        if [ "$CURRENT_COUNT" = "null" ] || [ "$CURRENT_COUNT" = "0" ]; then
+            log "WARNING: Unable to get current document count from Solr. Continuing to monitor..."
+        else
+            log "Current document count: $CURRENT_COUNT (target: $DATASET_COUNT)"
+            
+            # Check if count is stable (not changing)
+            if [ "$CURRENT_COUNT" = "$LAST_COUNT" ]; then
+                STABLE_COUNT=$((STABLE_COUNT + 10))
+                if [ $STABLE_COUNT -ge $STABLE_THRESHOLD ]; then
+                    log "Document count has been stable for $STABLE_THRESHOLD seconds. Reindexing appears to be complete."
+                    break
+                fi
+            else
+                STABLE_COUNT=0
+                LAST_COUNT="$CURRENT_COUNT"
+            fi
+            
+            # Also check if we've reached or exceeded the target count
+            if [ "$CURRENT_COUNT" -ge "$DATASET_COUNT" ]; then
+                log "Reindexing has finished. Final count: $CURRENT_COUNT"
+                break
+            fi
         fi
+        
         sleep 10
+        WAIT_COUNTER=$((WAIT_COUNTER + 10))
+        
+        # Log progress every 5 minutes
+        if [ $((WAIT_COUNTER % 300)) -eq 0 ]; then
+            log "Still monitoring reindexing... ($WAIT_COUNTER seconds elapsed)"
+        fi
     done
+    
+    if [ $WAIT_COUNTER -ge $MAX_WAIT_TIME ]; then
+        log "WARNING: Reindexing monitoring timed out after $MAX_WAIT_TIME seconds."
+        log "The reindexing process may still be running in the background."
+        log "You can check the status manually or continue with the upgrade."
+        read -p "Do you want to continue with the upgrade? (y/n): " CONTINUE_REINDEX
+        if [[ ! "$CONTINUE_REINDEX" =~ ^[Yy]$ ]]; then
+            log "Upgrade paused. Please check reindexing status and restart when ready."
+            exit 1
+        fi
+    else
+        log "Reindexing monitoring completed successfully."
+    fi
+    
     return 0
 }
 

@@ -425,6 +425,18 @@ migrate_api_filters() {
     log "Fetching old API filter settings..."
     local allow_cors
     allow_cors=$(curl -s http://localhost:8080/api/admin/settings/:AllowCors)
+    # If allow_cors is not set, prompt the user to set it
+    if [ -z "$allow_cors" ]; then
+        log "AllowCors is not set. Please set it to true in the database."
+        read -p "Do you want to set AllowCors to true? (y/N): " confirm
+        if [[ "$confirm" =~ ^[Yy]$ ]]; then
+            curl -X PUT http://localhost:8080/api/admin/settings/:AllowCors -d 'true'
+            check_error "Failed to set AllowCors"
+        else
+            log "Skipping AllowCors setting."
+        fi
+    fi
+
     local blocked_endpoints_raw
     blocked_endpoints_raw=$(curl -s http://localhost:8080/api/admin/settings/:BlockedApiEndpoints)
     # Extract the actual blocked endpoints value from JSON response
@@ -453,9 +465,9 @@ migrate_api_filters() {
     if [[ "$allow_cors" == "true" || "$allow_cors" == "null" || "$allow_cors" == "{}" || -z "$allow_cors" ]]; then
         log "Setting CORS configuration (allowing all origins)..."
         
-        # Set CORS origin - include gdcc.github.io for Dataverse Uploader compatibility
+        # Set CORS origin - use * to allow all origins including gdcc.github.io
         if ! echo "$jvm_options" | grep -q "dataverse.cors.origin"; then
-            sudo -u "$DATAVERSE_USER" "$PAYARA/bin/asadmin" create-jvm-options "-Ddataverse.cors.origin=*,https://gdcc.github.io"
+            sudo -u "$DATAVERSE_USER" "$PAYARA/bin/asadmin" create-jvm-options -- "-Ddataverse.cors.origin=*"
             check_error "Failed to set CORS origin"
         else
             log "CORS origin JVM option already exists. Skipping."
@@ -463,7 +475,7 @@ migrate_api_filters() {
         
         # Set CORS methods (optional, defaults to common methods)
         if ! echo "$jvm_options" | grep -q "dataverse.cors.methods"; then
-            sudo -u "$DATAVERSE_USER" "$PAYARA/bin/asadmin" create-jvm-options "-Ddataverse.cors.methods=GET,POST,PUT,DELETE,OPTIONS"
+            sudo -u "$DATAVERSE_USER" "$PAYARA/bin/asadmin" create-jvm-options -- "-Ddataverse.cors.methods=GET,POST,PUT,DELETE,OPTIONS"
             check_error "Failed to set CORS methods"
         else
             log "CORS methods JVM option already exists. Skipping."
@@ -471,7 +483,7 @@ migrate_api_filters() {
         
         # Set CORS allowed headers (optional, includes common headers)
         if ! echo "$jvm_options" | grep -q "dataverse.cors.headers.allow"; then
-            sudo -u "$DATAVERSE_USER" "$PAYARA/bin/asadmin" create-jvm-options "-Ddataverse.cors.headers.allow=Content-Type,X-Requested-With,Accept,Origin,Access-Control-Request-Method,Access-Control-Request-Headers,X-Dataverse-key,X-Dataverse-unblock-key"
+            sudo -u "$DATAVERSE_USER" "$PAYARA/bin/asadmin" create-jvm-options -- "-Ddataverse.cors.headers.allow=Content-Type,X-Requested-With,Accept,Origin,Access-Control-Request-Method,Access-Control-Request-Headers,X-Dataverse-key,X-Dataverse-unblock-key"
             check_error "Failed to set CORS allowed headers"
         else
             log "CORS allowed headers JVM option already exists. Skipping."
@@ -479,7 +491,7 @@ migrate_api_filters() {
         
         # Set CORS exposed headers (important for Dataverse Uploader)
         if ! echo "$jvm_options" | grep -q "dataverse.cors.headers.expose"; then
-            sudo -u "$DATAVERSE_USER" "$PAYARA/bin/asadmin" create-jvm-options "-Ddataverse.cors.headers.expose=Access-Control-Allow-Origin,Access-Control-Allow-Methods,Access-Control-Allow-Headers,X-Dataverse-key,X-Dataverse-unblock-key"
+            sudo -u "$DATAVERSE_USER" "$PAYARA/bin/asadmin" create-jvm-options -- "-Ddataverse.cors.headers.expose=Access-Control-Allow-Origin,Access-Control-Allow-Methods,Access-Control-Allow-Headers,X-Dataverse-key,X-Dataverse-unblock-key"
             check_error "Failed to set CORS exposed headers"
         else
             log "CORS exposed headers JVM option already exists. Skipping."
@@ -951,17 +963,17 @@ fix_uploader_cors() {
     
     log "⚠️  CORS issues detected. Applying fixes..."
     
-    # Ensure CORS origin includes gdcc.github.io
+    # Ensure CORS origin is set to allow all origins (including gdcc.github.io)
     if ! echo "$jvm_options" | grep -q "dataverse.cors.origin"; then
-        log "Setting CORS origin to include gdcc.github.io..."
-        sudo -u "$DATAVERSE_USER" "$PAYARA/bin/asadmin" create-jvm-options "-Ddataverse.cors.origin=*,https://gdcc.github.io"
+        log "Setting CORS origin to allow all origins..."
+        sudo -u "$DATAVERSE_USER" "$PAYARA/bin/asadmin" create-jvm-options -- "-Ddataverse.cors.origin=*"
         check_error "Failed to set CORS origin"
     else
         local current_origin=$(echo "$jvm_options" | grep "dataverse.cors.origin" | sed 's/.*dataverse.cors.origin=//')
-        if [[ "$current_origin" != "*" && "$current_origin" != *"gdcc.github.io"* ]]; then
-            log "Updating CORS origin to include gdcc.github.io..."
-            sudo -u "$DATAVERSE_USER" "$PAYARA/bin/asadmin" delete-jvm-options "-Ddataverse.cors.origin=$current_origin"
-            sudo -u "$DATAVERSE_USER" "$PAYARA/bin/asadmin" create-jvm-options "-Ddataverse.cors.origin=*,https://gdcc.github.io"
+        if [[ "$current_origin" != "*" ]]; then
+            log "Updating CORS origin to allow all origins..."
+            sudo -u "$DATAVERSE_USER" "$PAYARA/bin/asadmin" delete-jvm-options -- "-Ddataverse.cors.origin=$current_origin"
+            sudo -u "$DATAVERSE_USER" "$PAYARA/bin/asadmin" create-jvm-options -- "-Ddataverse.cors.origin=*"
             check_error "Failed to update CORS origin"
         fi
     fi
@@ -969,7 +981,7 @@ fix_uploader_cors() {
     # Ensure CORS exposed headers are set
     if ! echo "$jvm_options" | grep -q "dataverse.cors.headers.expose"; then
         log "Setting CORS exposed headers..."
-        sudo -u "$DATAVERSE_USER" "$PAYARA/bin/asadmin" create-jvm-options "-Ddataverse.cors.headers.expose=Access-Control-Allow-Origin,Access-Control-Allow-Methods,Access-Control-Allow-Headers,X-Dataverse-key,X-Dataverse-unblock-key"
+        sudo -u "$DATAVERSE_USER" "$PAYARA/bin/asadmin" create-jvm-options -- "-Ddataverse.cors.headers.expose=Access-Control-Allow-Origin,Access-Control-Allow-Methods,Access-Control-Allow-Headers,X-Dataverse-key,X-Dataverse-unblock-key"
         check_error "Failed to set CORS exposed headers"
     fi
     
