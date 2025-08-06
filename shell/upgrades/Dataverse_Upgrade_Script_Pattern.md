@@ -4,13 +4,64 @@
 Every Dataverse upgrade follows this fundamental sequence:
 
 ### 1. Pre-Upgrade Validation
+- **System Command Validation** - Check all required system commands are available
 - Check current version matches expected version
 - Validate environment variables (.env file)
-- Check required system commands
 - Verify disk space and system resources
 - **CRITICAL: Check and upgrade Java BEFORE any asadmin commands**
 
-### 2. Java Prerequisites (Learned from 6.5→6.7)
+### 2. System Command Validation (CRITICAL PRE-FLIGHT CHECK)
+**MUST be the first validation step in every upgrade script:**
+
+```bash
+# Function to check for required system commands
+check_required_commands() {
+    local missing_commands=()
+    local required_commands=(
+        # Core system commands
+        "curl" "wget" "grep" "sed" "sudo" "systemctl" "pgrep" "jq" "rm" "ls" "bash" "tee"
+        
+        # Hash verification
+        "sha256sum" "sha1sum"
+        
+        # Archive handling
+        "unzip" "tar"
+        
+        # Java and XML processing
+        "java" "xmllint"
+        
+        # Mathematical operations
+        "bc"
+        
+        # Additional utilities (version-specific)
+        "awk" "find" "rsync" "ed" "top"
+    )
+
+    for cmd in "${required_commands[@]}"; do
+        if ! command -v "$cmd" >/dev/null 2>&1; then
+            missing_commands+=("$cmd")
+        fi
+    done
+
+    if [ ${#missing_commands[@]} -ne 0 ]; then
+        log "❌ Error: The following required commands are not installed:"
+        printf ' - %s\n' "${missing_commands[@]}" | tee -a "$LOGFILE"
+        echo
+        log "Please install these commands before running the script."
+        log "On Debian/Ubuntu systems:"
+        log "  sudo apt-get install curl wget grep sed sudo systemd jq procps bash coreutils"
+        log "  sudo apt-get install unzip tar default-jre libxml2-utils bc"
+        log "On RHEL/CentOS systems:"
+        log "  sudo yum install curl wget grep sed sudo systemd jq procps bash coreutils"
+        log "  sudo yum install unzip tar java-11-openjdk libxml2 bc"
+        exit 1
+    fi
+}
+```
+
+**Why this is critical**: Scripts will fail catastrophically if required commands are missing, often with confusing error messages. This validation prevents wasted time and provides clear installation instructions.
+
+### 3. Java Prerequisites (Learned from 6.5→6.7)
 ```bash
 # MUST happen before any Payara/asadmin operations
 1. Check current Java version
@@ -21,7 +72,7 @@ Every Dataverse upgrade follows this fundamental sequence:
 
 **Why**: Payara 6.x requires Java 11+, but the old Payara installation may try to run with Java 8, causing "UnsupportedClassVersionError". Java must be upgraded before any `asadmin` commands are executed.
 
-### 3. Application Lifecycle Management
+### 4. Application Lifecycle Management
 ```bash
 # Standard sequence for ALL upgrades:
 1. Check for mixed state issues and resolve
@@ -34,12 +85,52 @@ Every Dataverse upgrade follows this fundamental sequence:
 8. Wait for site availability and API accessibility
 ```
 
-### 4. Post-Deployment Verification
+### 5. Post-Deployment Verification
 - Check deployed version via API
 - Verify services are responding correctly
 - Verify database migrations completed
 
 ## Critical Implementation Details (Lessons Learned)
+
+### System Command Validation Patterns
+
+#### 1. Standard Command List
+Every upgrade script should check for these core commands:
+```bash
+# Essential commands (always required)
+"curl" "wget" "grep" "sed" "sudo" "systemctl" "pgrep" "jq" "rm" "ls" "bash" "tee" "sha256sum" "unzip" "java" "xmllint" "bc"
+```
+
+#### 2. Version-Specific Commands
+Add these based on upgrade requirements:
+```bash
+# For major infrastructure upgrades (5.14→6.0)
+"awk" "find" "tar" "rsync" "ed" "top"
+
+# For schema-heavy upgrades (6.5→6.6)
+"xmllint" "bc" "sha256sum"
+
+# For configuration migration (6.6→6.7)
+"curl" "jq" "xmllint"
+```
+
+#### 3. Command Validation Best Practices
+```bash
+# Always provide installation instructions
+log "On Debian/Ubuntu systems:"
+log "  sudo apt-get install [missing-packages]"
+log "On RHEL/CentOS systems:"
+log "  sudo yum install [missing-packages]"
+
+# Check for critical commands first
+critical_commands=("curl" "sudo" "systemctl" "java")
+for cmd in "${critical_commands[@]}"; do
+    if ! command -v "$cmd" >/dev/null 2>&1; then
+        log "❌ CRITICAL: $cmd is required but not found"
+        exit 1
+    fi
+done
+```
 
 ### Mixed State Detection and Resolution
 Upgrades can fail if the system is in a mixed state (partially upgraded). Scripts must:
@@ -192,6 +283,7 @@ This upgrade introduced **configuration migration patterns**:
 ## Best Practices for Future Scripts
 
 ### 1. Always Include
+- **System command validation** as the first pre-flight check
 - Java version checking before any asadmin commands
 - Mixed state detection and resolution
 - Comprehensive error analysis (benign vs fatal)
@@ -206,16 +298,17 @@ This upgrade introduced **configuration migration patterns**:
 
 ### 2. Step Ordering Guidelines
 ```bash
-1. Environment validation
-2. Java upgrade (if needed)
-3. Version checking and mixed state resolution
-4. Service lifecycle management
-5. Component upgrades (infrastructure first)
-6. Application deployment
-7. Configuration updates and migrations
-8. Content updates (metadata blocks, schema)
-9. Post-deployment operations (reindex, export)
-10. Final verification and diagnostics
+1. System command validation (FIRST STEP)
+2. Environment validation
+3. Java upgrade (if needed)
+4. Version checking and mixed state resolution
+5. Service lifecycle management
+6. Component upgrades (infrastructure first)
+7. Application deployment
+8. Configuration updates and migrations
+9. Content updates (metadata blocks, schema)
+10. Post-deployment operations (reindex, export)
+11. Final verification and diagnostics
 ```
 
 ### 3. Error Handling Standards
@@ -230,6 +323,7 @@ This upgrade introduced **configuration migration patterns**:
 - **Provide standalone diagnostic tools** for troubleshooting
 
 ### 4. Validation Requirements
+- **System command availability** (comprehensive check)
 - Hash verification for all downloads
 - XML validation for configuration files
 - API response validation
@@ -481,26 +575,28 @@ Based on these patterns, future upgrade scripts should:
 
 ### Core Steps (Always Required)
 ```bash
-1. Validate environment and prerequisites
-2. Check and upgrade Java if needed
-3. Validate current version matches expected
-4. Resolve any mixed state issues
-5. Undeploy current version
-6. Stop services in correct order
-7. Backup configurations
-8. Download and verify new components
-9. Upgrade infrastructure components
-10. Deploy new application
-11. Update configurations and metadata
-12. Migrate configuration settings (database to JVM if needed)
-13. Restart services with health checks
-14. Perform post-deployment operations
-15. Run diagnostics and verification
-16. Verify upgrade completion
+1. Validate system commands (FIRST STEP)
+2. Validate environment and prerequisites
+3. Check and upgrade Java if needed
+4. Validate current version matches expected
+5. Resolve any mixed state issues
+6. Undeploy current version
+7. Stop services in correct order
+8. Backup configurations
+9. Download and verify new components
+10. Upgrade infrastructure components
+11. Deploy new application
+12. Update configurations and metadata
+13. Migrate configuration settings (database to JVM if needed)
+14. Restart services with health checks
+15. Perform post-deployment operations
+16. Run diagnostics and verification
+17. Verify upgrade completion
 ```
 
 ### Version-Specific Checklist
 Check release notes for:
+- [ ] **System command requirements** (new tools needed)
 - [ ] Java version requirements
 - [ ] Infrastructure component updates (Payara, Solr)
 - [ ] Database schema changes
@@ -512,6 +608,19 @@ Check release notes for:
 - [ ] Configuration changes
 - [ ] Security updates
 - [ ] Bug fixes requiring file modifications
+
+### System Command Checklist (NEW)
+For comprehensive pre-flight validation:
+- [ ] **Identify all system commands** used in the script
+- [ ] **Create comprehensive command list** for validation
+- [ ] **Provide installation instructions** for missing commands
+- [ ] **Check for version-specific commands** (new tools in this upgrade)
+- [ ] **Validate critical commands first** (curl, sudo, systemctl, java)
+- [ ] **Include platform-specific instructions** (Debian/Ubuntu vs RHEL/CentOS)
+- [ ] **Test command validation** on clean systems
+- [ ] **Document command dependencies** clearly
+- [ ] **Provide fallback options** for optional commands
+- [ ] **Include command version requirements** if specific versions needed
 
 ### Schema Field Checklist (New from 6.5→6.6)
 For upgrades with new metadata fields:
