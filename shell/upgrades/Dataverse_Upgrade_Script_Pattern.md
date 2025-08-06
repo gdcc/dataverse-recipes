@@ -10,7 +10,7 @@ Every Dataverse upgrade follows this fundamental sequence:
 - Verify disk space and system resources
 - **CRITICAL: Check and upgrade Java BEFORE any asadmin commands**
 
-### 2. Java Prerequisites (Learned from 6.5→6.6)
+### 2. Java Prerequisites (Learned from 6.5→6.7)
 ```bash
 # MUST happen before any Payara/asadmin operations
 1. Check current Java version
@@ -142,6 +142,13 @@ This upgrade included significant infrastructure changes despite being a "minor"
 - **Custom metadata field schema updates**
 - **New metadata blocks** (3D Objects)
 
+### Configuration Migration Updates (6.6 → 6.7)
+This upgrade introduced **configuration migration patterns**:
+- **CORS Migration** - Database settings to JVM options
+- **API Filter Migration** - Database settings to JVM options
+- **Enhanced State Management** - Running/failed/complete step tracking
+- **Advanced Diagnostics** - Indexing troubleshooting and CORS testing
+
 ## Script Structure Evolution
 
 ### 5.14 → 6.0 (Complex Migration)
@@ -173,6 +180,15 @@ This upgrade included significant infrastructure changes despite being a "minor"
 - **Helper scripts** for easy setup and maintenance
 - Comprehensive backup and recovery
 
+### 6.6 → 6.7 (Configuration Migration + Diagnostics)
+- 8 main steps with **enhanced state management**
+- **CORS migration** from database to JVM options
+- **API filter migration** for improved performance
+- **Advanced indexing diagnostics** with troubleshooting
+- **CORS compatibility testing** for Dataverse Uploader
+- **Standalone migration tools** for specific issues
+- **Enhanced error recovery** with step-by-step tracking
+
 ## Best Practices for Future Scripts
 
 ### 1. Always Include
@@ -184,6 +200,9 @@ This upgrade included significant infrastructure changes despite being a "minor"
 - Backup and validation steps
 - **Dynamic configuration support** (environment variables)
 - **Schema field validation** for custom metadata blocks
+- **Enhanced state management** with running/failed/complete tracking
+- **Configuration migration tools** for database-to-JVM transitions
+- **Advanced diagnostics** for common post-upgrade issues
 
 ### 2. Step Ordering Guidelines
 ```bash
@@ -193,10 +212,10 @@ This upgrade included significant infrastructure changes despite being a "minor"
 4. Service lifecycle management
 5. Component upgrades (infrastructure first)
 6. Application deployment
-7. Configuration updates
+7. Configuration updates and migrations
 8. Content updates (metadata blocks, schema)
 9. Post-deployment operations (reindex, export)
-10. Final verification
+10. Final verification and diagnostics
 ```
 
 ### 3. Error Handling Standards
@@ -207,6 +226,8 @@ This upgrade included significant infrastructure changes despite being a "minor"
 - Test rollback procedures
 - **Validate configuration values** before applying them
 - **Handle schema field conflicts** gracefully
+- **Track step states** (running/failed/complete) for recovery
+- **Provide standalone diagnostic tools** for troubleshooting
 
 ### 4. Validation Requirements
 - Hash verification for all downloads
@@ -216,6 +237,8 @@ This upgrade included significant infrastructure changes despite being a "minor"
 - Version confirmation at each step
 - **Environment variable validation** (type checking, value ranges)
 - **Schema field completeness** verification
+- **Configuration migration verification** (database vs JVM settings)
+- **CORS functionality testing** for cross-origin requests
 
 ## Dynamic Configuration Patterns (Learned from 6.5→6.6)
 
@@ -279,85 +302,178 @@ declare -A software_fields=(
 - Provide clear error messages with field names
 - Support iterative fixes for complex schema issues
 
-## Lessons Learned from 6.5→6.6 Upgrade
+## Configuration Migration Patterns (Learned from 6.6→6.7)
+
+### Database-to-JVM Migration Pattern
+For upgrades that move configuration from database to JVM options:
+
+#### 1. Migration Detection
+```bash
+# Check if migration is needed
+check_migration_needed() {
+    # Check for old database settings
+    local old_setting=$(curl -s "http://localhost:8080/api/admin/settings/:AllowCors" 2>/dev/null)
+    
+    # Check for new JVM options
+    local jvm_options=$(sudo -u "$DATAVERSE_USER" "$PAYARA/bin/asadmin" list-jvm-options)
+    
+    if [[ -n "$old_setting" && "$old_setting" != "null" ]] && ! echo "$jvm_options" | grep -q "dataverse.cors.origin"; then
+        return 0  # Migration needed
+    else
+        return 1  # Migration not needed
+    fi
+}
+```
+
+#### 2. Migration Process
+```bash
+# 1. Read old settings from database
+# 2. Convert to new JVM option format
+# 3. Apply new JVM options
+# 4. Restart services to apply changes
+# 5. Verify migration was successful
+# 6. Clean up old database settings
+```
+
+#### 3. Standalone Migration Tools
+- Provide `--migrate-cors` option for standalone CORS migration
+- Provide `--fix-uploader-cors` for specific compatibility issues
+- Include comprehensive testing and verification
+- Support rollback if migration fails
+
+### Enhanced State Management Pattern
+For upgrades requiring robust step tracking:
+
+#### 1. State File Structure
+```bash
+# Track step states: running, failed, complete
+mark_step_as_running() {
+    local step_name="$1"
+    # Remove any existing state for this step
+    grep -v "^${step_name}_running$\|^${step_name}_failed$" "$STATE_FILE" > "${STATE_FILE}.tmp"
+    mv "${STATE_FILE}.tmp" "$STATE_FILE"
+    echo "${step_name}_running" >> "$STATE_FILE"
+}
+
+mark_step_as_complete() {
+    local step_name="$1"
+    # Remove running/failed states and mark complete
+    grep -v "^${step_name}_running$\|^${step_name}_failed$" "$STATE_FILE" > "${STATE_FILE}.tmp"
+    mv "${STATE_FILE}.tmp" "$STATE_FILE"
+    echo "$step_name" >> "$STATE_FILE"
+}
+```
+
+#### 2. Recovery Mechanisms
+```bash
+# Check if step was interrupted
+is_step_completed() {
+    if [ -f "$STATE_FILE" ]; then
+        grep -q "^$1$" "$STATE_FILE"
+    else
+        return 1
+    fi
+}
+
+# Detect interrupted steps
+if grep -q "_running$" "$STATE_FILE"; then
+    log "⚠️  Detected interrupted upgrade. Resuming from last step..."
+fi
+```
+
+### Advanced Diagnostics Pattern
+For post-upgrade troubleshooting:
+
+#### 1. Indexing Diagnostics
+```bash
+# Comprehensive indexing analysis
+troubleshoot_indexing() {
+    # Check database vs Solr consistency
+    # Analyze indexing errors
+    # Provide specific troubleshooting steps
+    # Test CORS functionality
+    # Validate schema configuration
+}
+```
+
+#### 2. CORS Testing
+```bash
+# Test CORS functionality for specific domains
+check_uploader_cors() {
+    local cors_test=$(curl -s -I -H "Origin: https://gdcc.github.io" \
+        -H "Access-Control-Request-Method: GET" \
+        -H "Access-Control-Request-Headers: X-Dataverse-key" \
+        -X OPTIONS \
+        "http://localhost:8080/api/info/version" 2>/dev/null)
+    
+    if echo "$cors_test" | grep -q "Access-Control-Allow-Origin"; then
+        return 0  # CORS working
+    else
+        return 1  # CORS issues
+    fi
+}
+```
+
+## Lessons Learned from 6.6→6.7 Upgrade
 
 ### Critical Challenges and Solutions
 
-#### 1. Software Metadata Fields Schema Issues
-**Problem**: The upgrade introduced 22 new software metadata fields that needed to be added to Solr schema, but the initial implementation was incomplete and caused indexing failures.
+#### 1. Configuration Migration Complexity
+**Problem**: Moving CORS and API filter settings from database to JVM options required careful migration to avoid breaking existing functionality.
 
 **Solution Pattern**:
 ```bash
-# 1. Comprehensive field definition
-declare -A software_fields=(
-    ["swDependencyDescription"]="${SOFTWARE_FIELD_SWDEPENDENCYDESCRIPTION:-true}"
-    # ... all 22 fields with environment variable fallbacks
-)
-
-# 2. Validation before application
-for field in "${!software_fields[@]}"; do
-    local value="${software_fields[$field]}"
-    if [ "$value" != "true" ] && [ "$value" != "false" ] && [ "$value" != "disabled" ]; then
-        log "⚠️  WARNING: Invalid value '$value' for $field, using default 'false'"
-        software_fields["$field"]="false"
-    fi
-done
-
-# 3. Conditional field addition
-for field in "${!software_fields[@]}"; do
-    if [ "${field_exists[$field]}" -eq 0 ]; then
-        local multi_valued="${software_fields[$field]}"
-        
-        # Skip disabled fields
-        if [ "$multi_valued" = "disabled" ]; then
-            log "  ⏭️  Skipping $field field (disabled in .env)"
-            continue
-        fi
-        
-        # Add field with correct properties
-        sudo sed -i "${insert_line}i\  <field name=\"$field\" type=\"text_general\" indexed=\"true\" stored=\"true\" multiValued=\"$multi_valued\"/>" "$schema_file"
-    fi
-done
+# 1. Detect if migration is needed
+# 2. Read old settings and convert to new format
+# 3. Apply new settings before removing old ones
+# 4. Test functionality after migration
+# 5. Clean up old settings only after verification
+# 6. Provide standalone migration tools for troubleshooting
 ```
 
-#### 2. Iterative Problem Solving
-**Problem**: Schema errors appeared one by one during reindexing, requiring multiple iterations to identify all missing fields.
+#### 2. CORS Compatibility Issues
+**Problem**: Dataverse Uploader (gdcc.github.io) required specific CORS headers that weren't automatically configured.
 
 **Solution Pattern**:
-- Create temporary diagnostic scripts for rapid testing
-- Use comprehensive field lists based on release notes
-- Implement proper error handling and logging
-- Provide clear feedback about which fields are being processed
+```bash
+# 1. Test CORS functionality for specific domains
+# 2. Apply specific fixes for known compatibility issues
+# 3. Ensure proper preflight request handling
+# 4. Provide clear error messages and troubleshooting steps
+# 5. Support standalone CORS fixes without full upgrade
+```
 
-#### 3. Production-Ready Configuration
-**Problem**: Hardcoded field configurations made the script inflexible for different environments.
+#### 3. Enhanced State Management
+**Problem**: Long-running upgrades could be interrupted, requiring robust recovery mechanisms.
 
 **Solution Pattern**:
-- Environment variable-based configuration with `.env` files
-- Fallback to sensible defaults
-- Validation of all configuration values
-- Helper scripts for easy setup
-- Comprehensive documentation
+```bash
+# 1. Track step states (running/failed/complete)
+# 2. Detect interrupted upgrades on restart
+# 3. Provide clear recovery instructions
+# 4. Support manual state reset if needed
+# 5. Log all state changes for audit trail
+```
 
 ### Key Improvements for Future Scripts
 
-#### 1. Schema Field Management
-- **Always** check release notes for new metadata fields
-- **Always** provide configuration options for field properties
-- **Always** validate field configurations before applying
-- **Always** support disabling fields for environments that don't need them
+#### 1. Configuration Migration
+- **Always** check release notes for configuration changes
+- **Always** provide migration tools for database-to-JVM transitions
+- **Always** test configuration changes before removing old settings
+- **Always** support standalone migration for troubleshooting
 
-#### 2. Error Handling
-- **Always** provide clear error messages with field names
-- **Always** log all schema changes for audit trails
-- **Always** support iterative fixes for complex issues
-- **Always** validate configurations before applying them
+#### 2. Enhanced Diagnostics
+- **Always** include comprehensive post-upgrade diagnostics
+- **Always** provide specific troubleshooting for common issues
+- **Always** test cross-origin functionality for web tools
+- **Always** validate schema configuration after updates
 
-#### 3. Configuration Management
-- **Always** use environment variables for customizable settings
-- **Always** provide example configuration files
-- **Always** include helper scripts for easy setup
-- **Always** maintain backward compatibility
+#### 3. State Management
+- **Always** track step states for robust recovery
+- **Always** detect interrupted upgrades automatically
+- **Always** provide clear recovery instructions
+- **Always** support manual state management when needed
 
 ## Template for Future Upgrades
 
@@ -376,9 +492,11 @@ Based on these patterns, future upgrade scripts should:
 9. Upgrade infrastructure components
 10. Deploy new application
 11. Update configurations and metadata
-12. Restart services with health checks
-13. Perform post-deployment operations
-14. Verify upgrade completion
+12. Migrate configuration settings (database to JVM if needed)
+13. Restart services with health checks
+14. Perform post-deployment operations
+15. Run diagnostics and verification
+16. Verify upgrade completion
 ```
 
 ### Version-Specific Checklist
@@ -389,6 +507,8 @@ Check release notes for:
 - [ ] Metadata block updates
 - [ ] **New metadata fields** requiring Solr schema updates
 - [ ] **Custom metadata blocks** that need field configuration
+- [ ] **Configuration migration** (database to JVM options)
+- [ ] **CORS and API filter changes**
 - [ ] Configuration changes
 - [ ] Security updates
 - [ ] Bug fixes requiring file modifications
@@ -405,3 +525,29 @@ For upgrades with new metadata fields:
 - [ ] **Document all configuration options** clearly
 - [ ] **Test with different configurations** (dev/staging/production)
 - [ ] **Include comprehensive error handling** for schema issues
+
+### Configuration Migration Checklist (New from 6.6→6.7)
+For upgrades with configuration changes:
+- [ ] **Identify deprecated database settings** from release notes
+- [ ] **Determine new JVM option equivalents** for old settings
+- [ ] **Create migration detection logic** to check if migration is needed
+- [ ] **Provide standalone migration tools** for troubleshooting
+- [ ] **Include comprehensive testing** for migrated settings
+- [ ] **Support rollback mechanisms** if migration fails
+- [ ] **Document migration process** clearly
+- [ ] **Test with different configuration scenarios**
+- [ ] **Include CORS compatibility testing** for web tools
+- [ ] **Provide specific fixes** for known compatibility issues
+
+### Enhanced Diagnostics Checklist (New from 6.6→6.7)
+For comprehensive post-upgrade verification:
+- [ ] **Include indexing diagnostics** to check database vs Solr consistency
+- [ ] **Provide CORS testing** for cross-origin functionality
+- [ ] **Include schema validation** for custom metadata fields
+- [ ] **Create troubleshooting guides** for common issues
+- [ ] **Support standalone diagnostic tools** for specific problems
+- [ ] **Include performance monitoring** for post-upgrade verification
+- [ ] **Provide clear error messages** with actionable solutions
+- [ ] **Test with different deployment scenarios** (dev/staging/production)
+- [ ] **Include comprehensive logging** for audit trails
+- [ ] **Support iterative problem resolution** for complex issues
