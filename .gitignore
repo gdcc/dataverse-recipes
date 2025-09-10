@@ -1,3 +1,8 @@
 .env
 **/.env
 **/*.log
+
+# Javascript/Typescript
+**/*/package-lock.json
+**/*/yarn.lock
+**/*/node_modules
