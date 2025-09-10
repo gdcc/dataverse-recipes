@@ -17,7 +17,6 @@ The repository is organized by programming language and tool:
 
 - `python/`: 🐍 Python recipes
 - `shell/`: 🐚 Shell recipes
-- `rust/`: 🦀 Rust recipes
 - `dvcli/`: 🛠️ DVCLI recipes
 
 
