@@ -2,6 +2,15 @@
 
 This directory contains JavaScript/TypeScript recipes for working with Dataverse metadatablocks. These tools help you interact with, analyze, and manage metadata schemas across different Dataverse instances.
 
+> [!IMPORTANT]  
+> These scripts require `ts-node` to execute TypeScript files directly. Install it globally with:
+>
+> ```bash
+> npm install -g ts-node
+> ```
+>
+> Alternatively, you can use `npx ts-node <script>.ts` instead of installing globally. We recommend a global installation for convenience.
+
 ## Available Recipes
 
 ### 1. List Metadatablocks (`list.ts`)
