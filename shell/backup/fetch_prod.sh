@@ -3155,6 +3155,11 @@ main() {
         STATUS_COUNTER="SUCCESS"
     fi
 
+    # Step: JVM Options Sync
+    if [ "$SKIP_JVM_OPTIONS" = false ]; then
+        verify_jvm_options
+    fi
+
     # Restart Payara now that core syncs are done
     if [ "$DRY_RUN" = true ]; then
         log "DRY RUN: Would start Payara service now."
@@ -3212,6 +3217,13 @@ main() {
     fi
 
     log "Sync completed successfully"
+
+    # Template Integrity Check
+    if [ "$SKIP_TEMPLATE_CHECK" = false ]; then
+        check_template_integrity
+        STATUS_TEMPLATE_CHECK="SUCCESS" # Mark as run. The function itself just logs info.
+    fi
+
     print_final_summary "$DRY_RUN"
 
     # Execute comparison if requested and exit

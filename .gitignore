@@ -1,8 +1,15 @@
 .env
 **/.env
+*.log
 **/*.log
 
 # Javascript/Typescript
 **/*/package-lock.json
 **/*/yarn.lock
 **/*/node_modules
+
+**/*.state
+**/*.bak
+**/downloads/*
+**/baseline_metrics.json
+.cursorignore
