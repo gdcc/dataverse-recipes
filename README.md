@@ -17,8 +17,8 @@ The repository is organized by programming language and tool:
 
 - `python/`: 🐍 Python recipes
 - `shell/`: 🐚 Shell recipes
-- `rust/`: 🦀 Rust recipes
 - `dvcli/`: 🛠️ DVCLI recipes
+- `js/`: 🌐 JavaScript recipes
 
 
 Each language directory contains specific recipes organized by functionality or use case.
@@ -48,6 +48,10 @@ In the following sections, you can find a list of available recipes for each lan
 - [File Management](dvcli/files)
 - [Search](dvcli/search)
 - [Administration](dvcli/admin)
+
+### JavaScript 🌐
+
+- [Metadata Block Management](js/metadatablocks)
 
 ## 🤝 Contributing
 
