@@ -3,10 +3,11 @@
 This directory contains JavaScript/TypeScript recipes for working with Dataverse metadatablocks. These tools help you interact with, analyze, and manage metadata schemas across different Dataverse instances.
 
 > [!IMPORTANT]  
-> These scripts require `ts-node` to execute TypeScript files directly. Install it globally with:
+> These scripts require `ts-node` and `node>=20.0.0` to execute TypeScript files directly. Install `ts-node` and `node` globally with:
 >
 > ```bash
 > npm install -g ts-node
+> nvm install 20 # or your desired version >= 20.0.0
 > ```
 >
 > Alternatively, you can use `npx ts-node <script>.ts` instead of installing globally. We recommend a global installation for convenience.
@@ -56,6 +57,7 @@ npm run list -- --base-url https://your-dataverse.org/api/v1
 
 ## Requirements
 
-- Node.js
+- Node.js `>= 20.0.0`
 - TypeScript
+- ts-node
 - Access to a Dataverse instance
