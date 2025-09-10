@@ -1,4 +1,7 @@
 {
+  "engines": {
+    "node": ">=20.0.0"
+  },
   "dependencies": {
     "@iqss/dataverse-client-javascript": "^2.0.0",
     "commander": "^14.0.0",
