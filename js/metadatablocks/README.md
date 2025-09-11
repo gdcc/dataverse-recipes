@@ -1,6 +1,6 @@
 # Dataverse Metadata Block Recipes
 
-This directory contains JavaScript/TypeScript recipes for working with Dataverse metadatablocks. These tools help you interact with, analyze, and manage metadata schemas across different Dataverse instances.
+This directory contains JavaScript/TypeScript recipes for working with Dataverse metadata blocks. These tools help you interact with, analyze, and manage metadata schemas across different Dataverse instances.
 
 > [!IMPORTANT]  
 > These scripts require `ts-node` and `node>=20.0.0` to execute TypeScript files directly. Install `ts-node` and `node` globally with:
