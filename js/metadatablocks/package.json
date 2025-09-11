@@ -13,7 +13,6 @@
     "scripts": {
         "list": "ts-node list.ts",
         "list:demo": "ts-node list.ts -b https://demo.dataverse.org/api/v1",
-        "list:local": "ts-node list.ts -b http://localhost:8080/api/v1",
-        "list:harvard": "ts-node list.ts -b https://dataverse.harvard.edu/api/v1"
+        "list:local": "ts-node list.ts -b http://localhost:8080/api/v1"
     }
 }

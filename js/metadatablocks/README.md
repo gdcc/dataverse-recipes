@@ -23,12 +23,11 @@ Retrieves and displays all metadata blocks from a Dataverse instance.
 ```bash
 # Predefined environments
 npm run list:demo        # Demo Dataverse instance
-npm run list:harvard     # Harvard Dataverse
 
 # With additional options
 npm run list:demo -- --api-token your-token-here
 npm run list:demo -- --output metadata-blocks.json
-npm run list:demo -- --api-token your-token --output harvard-blocks.json
+npm run list:demo -- --api-token your-token --output local-blocks.json
 
 # Direct usage with custom URL
 npm run list -- --base-url https://your-dataverse.org/api/v1
