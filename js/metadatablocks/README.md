@@ -1,4 +1,4 @@
-# Dataverse Metadatablocks Recipes
+# Dataverse Metadata Block Recipes
 
 This directory contains JavaScript/TypeScript recipes for working with Dataverse metadatablocks. These tools help you interact with, analyze, and manage metadata schemas across different Dataverse instances.
 
