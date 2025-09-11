@@ -14,7 +14,7 @@ This directory contains JavaScript/TypeScript recipes for working with Dataverse
 
 ## Available Recipes
 
-### 1. List Metadatablocks (`list.ts`)
+### 1. List Metadata blocks (`list.ts`)
 
 Retrieves and displays all metadata blocks from a Dataverse instance.
 
