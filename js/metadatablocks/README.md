@@ -1,0 +1,62 @@
+# Dataverse Metadata Block Recipes
+
+This directory contains JavaScript/TypeScript recipes for working with Dataverse metadata blocks. These tools help you interact with, analyze, and manage metadata schemas across different Dataverse instances.
+
+> [!IMPORTANT]  
+> These scripts require `ts-node` and `node>=20.0.0` to execute TypeScript files directly. Install `ts-node` and `node` globally with:
+>
+> ```bash
+> npm install -g ts-node
+> nvm install 20 # or your desired version >= 20.0.0
+> ```
+>
+> Alternatively, you can use `npx ts-node <script>.ts` instead of installing globally. We recommend a global installation for convenience.
+
+## Available Recipes
+
+### 1. List Metadata blocks (`list.ts`)
+
+Retrieves and displays all metadata blocks from a Dataverse instance.
+
+**Usage:**
+
+```bash
+# Predefined environments
+npm run list:demo        # Demo Dataverse instance
+
+# With additional options
+npm run list:demo -- --api-token your-token-here
+npm run list:demo -- --output metadata-blocks.json
+npm run list:demo -- --api-token your-token --output local-blocks.json
+
+# Direct usage with custom URL
+npm run list -- --base-url https://your-dataverse.org/api/v1
+```
+
+**Options:**
+
+- `-b, --base-url <url>`: Base URL for the Dataverse API (required)
+- `-a, --api-token <token>`: API token for authentication (optional)
+- `-o, --output <file>`: Save output to file instead of console (optional)
+- `-h, --help`: Show help information
+
+## Getting Started
+
+1. Install dependencies:
+
+   ```bash
+   npm install
+   ```
+
+2. Run any of the available scripts:
+
+   ```bash
+   npm run list:demo
+   ```
+
+## Requirements
+
+- Node.js `>= 20.0.0`
+- TypeScript
+- ts-node
+- Access to a Dataverse instance
