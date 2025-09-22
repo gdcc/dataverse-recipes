@@ -10,9 +10,9 @@
   "devDependencies": {
     "@types/node": "^24.3.1"
   },
-    "scripts": {
-        "list": "ts-node list.ts",
-        "list:demo": "ts-node list.ts -b https://demo.dataverse.org/api/v1",
-        "list:local": "ts-node list.ts -b http://localhost:8080/api/v1"
-    }
+  "scripts": {
+    "list": "npx tsx list.ts",
+    "list:demo": "npx tsx list.ts -b https://demo.dataverse.org/api/v1",
+    "list:local": "npx tsx list.ts -b http://localhost:8080/api/v1"
+  }
 }

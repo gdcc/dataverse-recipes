@@ -5,9 +5,9 @@
  * It can output the results to the console or save them to a JSON file.
  * 
  * Usage:
- *   ts-node list.ts -b https://demo.dataverse.org/api/v1
- *   ts-node list.ts -b https://demo.dataverse.org/api/v1 -a your-api-token
- *   ts-node list.ts -b https://demo.dataverse.org/api/v1 -o metadata-blocks.json
+ *   npx tsx list.ts -b https://demo.dataverse.org/api/v1
+ *   npx tsx list.ts -b https://demo.dataverse.org/api/v1 -a your-api-token
+ *   npx tsx list.ts -b https://demo.dataverse.org/api/v1 -o metadata-blocks.json
  */
 
 import { ApiConfig, getAllMetadataBlocks, MetadataBlock, } from '@iqss/dataverse-client-javascript'
