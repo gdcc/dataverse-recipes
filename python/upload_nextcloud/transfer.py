@@ -19,7 +19,7 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 from pyDataverse.api import NativeApi
 from pyDataverse.models import Datafile
-from urllib.parse import urljoin, urlparse
+from urllib.parse import urljoin, urlparse, unquote
 
 # Set up logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -91,7 +91,8 @@ class Transfer:
                     if not is_directory:
                         # This is a single file share
                         href = response_elem.find('{DAV:}href').text
-                        relative_path = href.replace('/public.php/webdav/', '').strip('/')
+                        # Remove webdav prefix and decode URL encoding
+                        relative_path = unquote(href.replace('/public.php/webdav/', '').strip('/'))
 
                         size_elem = prop.find('{DAV:}getcontentlength')
                         file_size = int(size_elem.text) if size_elem is not None else 0
@@ -111,7 +112,7 @@ class Transfer:
         for response_elem in responses:
             href = response_elem.find('{DAV:}href').text
             # Remove webdav prefix and decode
-            relative_path = href.replace('/public.php/webdav/', '').strip('/')
+            relative_path = unquote(href.replace('/public.php/webdav/', '').strip('/'))
             
             # Skip the current directory itself
             if relative_path == full_path:
