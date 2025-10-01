@@ -25,9 +25,16 @@ from urllib.parse import urljoin, urlparse, unquote
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
+# Constants
+DEFAULT_TEMP_DIR = tempfile.gettempdir()
+DEFAULT_JOURNAL_FILE = 'transfer_journal.txt'
+DEFAULT_INVALID_DIRLABEL_CHARS_REGEX = "[^a-zA-Z0-9_.-/\\ ]+"
+DEFAULT_INVALID_DIRLABEL_REPLACEMENT_CHAR = "."
+
 class Transfer:
     def __init__(self, share_url, dataverse_url, api_token, dataset_doi, skip_existing=False,
-                 subpath="", temp_dir=None, journal_file="transfer_journal.txt"):
+                 subpath="", temp_dir=None, journal_file=DEFAULT_JOURNAL_FILE,
+                 invalid_dirlabel_regex=DEFAULT_INVALID_DIRLABEL_CHARS_REGEX, invalid_dirlabel_replacement_char=DEFAULT_INVALID_DIRLABEL_REPLACEMENT_CHAR):
         self.share_url = share_url
         self.largest_file_size = -1
         self.dataverse_url = dataverse_url
@@ -39,7 +46,9 @@ class Transfer:
         self.journal_file = journal_file
         self.native_api = NativeApi(dataverse_url, api_token)
         self.original_limit = None
-        
+        self.invalid_dirlabel_regex = re.compile(invalid_dirlabel_regex)
+        self.invalid_dirlabel_replacement_char = invalid_dirlabel_replacement_char
+
         # Create temp directory if it doesn't exist
         os.makedirs(self.temp_dir, exist_ok=True)
         
@@ -210,6 +219,9 @@ class Transfer:
             logger.error(f"Failed to download {file_info['path']}: {e}")
             sys.exit(1)
     
+    def sanitize_directory_label(self, directory_label):
+        return self.invalid_dirlabel_regex.sub(self.invalid_dirlabel_replacement_char, directory_label)
+    
     def upload_direct(self, local_file_path, file_info):
         """Upload file directly to Dataverse using pyDataverse"""
         try:
@@ -223,8 +235,14 @@ class Transfer:
             # Add directory information if file is in subdirectory
             if '/' in file_info['path']:
                 directory_path = '/'.join(file_info['path'].split('/')[:-1])
+
+                if self.invalid_dirlabel_regex.search(directory_path):
+                    old_path = directory_path
+                    directory_path = self.sanitize_directory_label(directory_path)
+                    logger.warning(f"'{old_path}' contains invalid characters, sanitized to '{directory_path}'.")
+
                 df.set({"directoryLabel": directory_path})
-            
+
             # Upload file
             logger.info(f"Uploading {file_info['path']} to Dataverse dataset {self.dataset_doi}")
             response = self.native_api.upload_datafile(self.dataset_doi, local_file_path, df.json())
@@ -371,6 +389,10 @@ def main():
                        help='Enable verbose logging output')
     parser.add_argument('--env-file', default='.env',
                        help='Path to .env file (default: .env in current directory)')
+    parser.add_argument('--invalid-directory-label-chars-regex', default=DEFAULT_INVALID_DIRLABEL_CHARS_REGEX,
+                       help=f"Regex matching any invalid characters in a file's directoryLabel, based on Dataverse\'s FileDirectoryNameValidator (default: {DEFAULT_INVALID_DIRLABEL_CHARS_REGEX})")
+    parser.add_argument('--replace-invalid-chars-with', default=DEFAULT_INVALID_DIRLABEL_REPLACEMENT_CHAR,
+                       help=f"Character to replace invalid characters in directory path with (default: {DEFAULT_INVALID_DIRLABEL_REPLACEMENT_CHAR})")
 
     args = parser.parse_args()
 
@@ -406,7 +428,9 @@ def main():
         subpath=args.subpath,
         skip_existing=args.skip_existing,
         temp_dir=args.temp_dir,
-        journal_file=args.journal_file
+        journal_file=args.journal_file,
+        invalid_dirlabel_regex=args.invalid_directory_label_chars_regex,
+        invalid_dirlabel_replacement_char=args.replace_invalid_chars_with
     )
     
     migrator.transfer()
