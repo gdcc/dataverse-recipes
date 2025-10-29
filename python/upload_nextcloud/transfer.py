@@ -7,6 +7,9 @@ It handles file size limit adjustments, resumable downloads, and maintains a jou
 """
 
 import argparse
+import zipfile
+from zipfile import ZIP_STORED
+
 import humanize
 import json
 import logging
@@ -19,6 +22,7 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 from pyDataverse.api import NativeApi
 from pyDataverse.models import Datafile
+from typing import List, Dict, Optional, Union
 from urllib.parse import urljoin, urlparse, unquote
 
 # Set up logging
@@ -34,7 +38,8 @@ DEFAULT_INVALID_DIRLABEL_REPLACEMENT_CHAR = "."
 class Transfer:
     def __init__(self, share_url, dataverse_url, api_token, dataset_doi, skip_existing=False,
                  subpath="", temp_dir=None, journal_file=DEFAULT_JOURNAL_FILE,
-                 invalid_dirlabel_regex=DEFAULT_INVALID_DIRLABEL_CHARS_REGEX, invalid_dirlabel_replacement_char=DEFAULT_INVALID_DIRLABEL_REPLACEMENT_CHAR):
+                 invalid_dirlabel_regex=DEFAULT_INVALID_DIRLABEL_CHARS_REGEX, invalid_dirlabel_replacement_char=DEFAULT_INVALID_DIRLABEL_REPLACEMENT_CHAR,
+                 keep_zips=False):
         self.share_url = share_url
         self.largest_file_size = -1
         self.dataverse_url = dataverse_url
@@ -48,6 +53,7 @@ class Transfer:
         self.original_limit = None
         self.invalid_dirlabel_regex = re.compile(invalid_dirlabel_regex)
         self.invalid_dirlabel_replacement_char = invalid_dirlabel_replacement_char
+        self.keep_zips = keep_zips
 
         # Create temp directory if it doesn't exist
         os.makedirs(self.temp_dir, exist_ok=True)
@@ -61,8 +67,8 @@ class Transfer:
         share_token = parsed.path.split('/')[-1]
         webdav_url = f"{parsed.scheme}://{parsed.netloc}/public.php/webdav"
         return webdav_url, share_token
-    
-    def list_files_recursive(self, path=""):
+
+    def list_files_recursive(self, path: str = "") -> List[Dict[str, str | int]]:
         """Recursively list all files in the Nextcloud share using WebDAV"""
         webdav_url, share_token = self.get_webdav_url()
         full_path = path
@@ -184,7 +190,7 @@ class Transfer:
         
         return journal
 
-    def update_journal(self, file_path, status):
+    def update_journal(self, file_path: str, status: str) -> None:
         """Update journal with file status"""
         journal = self.read_journal()
         journal[file_path] = status
@@ -192,8 +198,8 @@ class Transfer:
         with open(self.journal_file, 'w') as f:
             for path, stat in journal.items():
                 f.write(f"{stat};{path}\n")
-    
-    def download_file(self, file_info):
+
+    def download_file(self, file_info: Dict[str, str | int]) -> Optional[str]:
         """Download a single file from Nextcloud"""
         webdav_url, share_token = self.get_webdav_url()
         file_url = urljoin(webdav_url + "/", file_info['full_path'])
@@ -218,11 +224,21 @@ class Transfer:
         except requests.RequestException as e:
             logger.error(f"Failed to download {file_info['path']}: {e}")
             sys.exit(1)
-    
-    def sanitize_directory_label(self, directory_label):
+
+    def sanitize_directory_label(self, directory_label: str) -> str:
+        """
+        Sanitizes a directory label by replacing invalid characters defined in
+        the regular expression with a specified replacement character.
+
+        :param directory_label: A string representing the directory label to sanitize.
+        :type directory_label: str
+        :return: A sanitized version of the directory label where invalid characters
+            are replaced by the specified character.
+        :rtype: str
+        """
         return self.invalid_dirlabel_regex.sub(self.invalid_dirlabel_replacement_char, directory_label)
-    
-    def upload_direct(self, local_file_path, file_info):
+
+    def upload_direct(self, local_file_path: str, file_info: Dict[str, str | int]) -> bool:
         """Upload file directly to Dataverse using pyDataverse"""
         try:
             # Create datafile object
@@ -243,8 +259,16 @@ class Transfer:
 
                 df.set({"directoryLabel": directory_path})
 
+            # If this is a ZIP-file and keeping them zipped was requested, double ZIP now.
+            if file_info['path'].lower().endswith('.zip') and self.keep_zips:
+                logger.info(f"Double-zipping {file_info['path']} to avoid unpacking by Dataverse")
+                original_file_path = local_file_path
+                local_file_path = "{name}.double.zip".format(name = os.path.basename(original_file_path))
+                with zipfile.ZipFile(local_file_path, mode='w', compression=ZIP_STORED, compresslevel=None) as zf:
+                    zf.write(original_file_path, arcname=os.path.basename(original_file_path))
+
             # Upload file
-            logger.info(f"Uploading {file_info['path']} to Dataverse dataset {self.dataset_doi}")
+            logger.info(f"Uploading {file_info['path']} to Dataverse dataset {self.dataset_doi} (local file: {local_file_path})")
             response = self.native_api.upload_datafile(self.dataset_doi, local_file_path, df.json())
             
             if response.status_code == 200:
@@ -268,8 +292,8 @@ class Transfer:
         except Exception as e:
             logger.error(f"Upload failed for {file_info['path']}: {e}")
             return False
-    
-    def cleanup_temp_file(self, file_path):
+
+    def cleanup_temp_file(self, file_path: str) -> None:
         """Remove temporary downloaded file"""
         try:
             os.remove(file_path)
@@ -379,6 +403,8 @@ def main():
                        help='(Req.) Target dataset DOI (e.g., doi:10.1234/5678). Can be set as env var DATASET_DOI.')
     parser.add_argument('--skip-existing', required=False, action='store_true',
                        help='(Opt.) Skip files that have already been uploaded to the dataset (default: exit with error)')
+    parser.add_argument('--keep-zips', required=False, action='store_true',
+                        help='(Opt.) If ZIP files are uploaded, double-ZIP them to avoid unpackaging by Dataverse' )
 
     # Other arguments
     parser.add_argument('--temp-dir',
@@ -430,7 +456,8 @@ def main():
         temp_dir=args.temp_dir,
         journal_file=args.journal_file,
         invalid_dirlabel_regex=args.invalid_directory_label_chars_regex,
-        invalid_dirlabel_replacement_char=args.replace_invalid_chars_with
+        invalid_dirlabel_replacement_char=args.replace_invalid_chars_with,
+        keep_zips=args.keep_zips
     )
     
     migrator.transfer()

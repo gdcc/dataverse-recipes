@@ -35,6 +35,7 @@ options:
                         DATASET_DOI.
   --skip-existing       (Opt.) Skip files that have already been uploaded to the dataset (default: exit
                         with error)
+  --keep-zips           (Opt.) If ZIP files are uploaded, double-ZIP them to avoid unpackaging by Dataverse
   --temp-dir TEMP_DIR   Temporary directory for downloads (default: system temp)
   --journal-file JOURNAL_FILE
                         Journal file to track progress (default: transfer_journal.txt)
