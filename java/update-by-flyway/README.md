@@ -46,6 +46,106 @@ Before using this recipe, make sure you have:
 
 Because all migration work happens locally in Docker, it is generally safe to experiment with a production snapshot as long as you understand that this recipe is not an official upgrade mechanism.
 
+**Q: What about potential data migrations for metadata blocks, fields and CVs?**
+
+A: This tool produces a migrated database dump but does **not** load any TSV files.
+The admin will perform the final TSV reload (with the target version's TSVs) as part of deploying the new Dataverse version, following the standard upgrade procedure.
+The question below addresses whether skipping the *intermediate* TSV reloads (those that would have happened between the source and target versions in a release-by-release upgrade) is safe.
+
+We need to distinguish between "data definition migration" and "user data migration" scenarios.
+
+#### Data Definition Migration
+
+These are Flyway migrations that modify `metadatablock`, `datasetfieldtype`, `controlledvocabularyvalue`, or related definitional tables.
+
+- If a migration's `WHERE` clause finds the targeted rows in the source DB, it applies as intended.
+- If the targeted rows aren't there (because the source DB pre-dates their  introduction, or an admin already removed them), the migration silently affects zero rows.  
+  Flyway considers this success. The end state is correct either way, because the target TSV either reintroduces what's needed or omits what's been removed.
+- If a migration is written to fail loudly on missing state, we'll notice and can fix it.
+- The only failure mode is a migration written too unspecifically (e.g., delete by hardcoded ID hitting an unintended row).
+  This is a pre-existing risk for any upgrade path, not specific to this tool.
+
+Update/rename migrations specifically can only target state introduced by a *previous* TSV reload, since Dataverse's upgrade process has always asked admins to reload TSVs *after* deploying, never before.
+So on a too-old source DB they silently no-op, and on a sufficiently up-to-date source DB they apply normally - never silently wrong.
+
+#### User Data Migration
+
+If a Flyway migration updates user data (`datasetfield`, `datasetfieldvalue`) based on assumptions about which fields or CV values exist or have a certain state, we could be in trouble:
+those assumptions may have been valid only after an intermediate TSV reload - which this tool skips.
+
+**Audit method**: search migrations for any reference to the metadata-block-related tables and their dependents (the pattern is intentionally broad and will produce false positives requiring manual review):
+
+```shell
+grep -riEl '\b(metadatablock|datasetfieldtype|controlledvocabularyvalue|controlledvocabalternate|datasetfield|datasetfieldvalue|dataversefieldtypeinputlevel|dataversefacet|datasetfielddefaultvalue)\b' src/main/resources/db/migration/
+```
+
+This grep covers only SQL migrations. If Java-based Flyway migrations are added in the future, they require separate auditing.
+
+**Audit results as of Dataverse 6.10.1**:
+
+- `V5.3.0.3__7551-expanded-compound-datasetfield-validation.sql` — modifies `datasetfieldtype.required` and `dataversefieldtypeinputlevel` based on parent/child relationships; does not touch user data.
+- `V5.8.0.2__8018-invalid-characters.sql` — uniform character sanitization on `datasetfieldvalue`; no TSV-state assumptions.
+- `V5.10.1.1__8533-semantic-updates.sql` — adds unique constraint on `datasetfieldtype.name`; schema-only.
+- `V6.1.0.4__5645-geospatial-fieldname-fix.sql` — renames two `datasetfieldtype` rows by name; idempotent, no user-data impact.
+- `V6.5.0.6.sql` / `V6.5.0.12.sql` — adds column and index on `dataversefieldtypeinputlevel`; schema-only.
+
+None of these update user-entered data based on assumptions about TSV-loaded state.
+Schema changes, uniform sanitization, and idempotent renames only. ✅
+
+#### Requirement for future migrations
+
+Any future migration that updates user data based on metadata-block state **must** explicitly verify its expected starting state and fail loudly if the state is absent or unexpected.
+Two patterns to be aware of:
+
+**Existence checks** — when a migration assumes a particular field or CV value exists:
+
+```sql
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM datasetfieldtype WHERE name = 'expectedField') THEN
+    RAISE EXCEPTION 'Migration prerequisite missing: datasetfieldtype "expectedField" not found. Run the previous release''s TSV load first.';
+  END IF;
+  -- ... rest of migration ...
+END $$;
+```
+
+**Attribute-state checks** — when a migration assumes a field/CV row has a particular attribute value (e.g., `required=true`, a specific `fieldType`, a specific `displayOrder`, membership in a particular `metadatablock`).
+This is the more dangerous case: the row exists, so an existence check passes, but the migration's logic depends on an attribute that may only have been set by a previous TSV reload.
+Verify the attribute explicitly:
+
+```sql
+DO $$
+DECLARE
+  expected_required boolean;
+  expected_fieldtype text;
+BEGIN
+  SELECT required, fieldtype INTO expected_required, expected_fieldtype
+    FROM datasetfieldtype WHERE name = 'expectedField';
+
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'Migration prerequisite missing: datasetfieldtype "expectedField" not found.';
+  END IF;
+
+  IF expected_required IS DISTINCT FROM true OR expected_fieldtype IS DISTINCT FROM 'TEXT' THEN
+    RAISE EXCEPTION 'Migration prerequisite mismatch: datasetfieldtype "expectedField" has required=%, fieldtype=%, expected required=true, fieldtype=TEXT. Run the previous release''s TSV load first.',
+      expected_required, expected_fieldtype;
+  END IF;
+
+  -- ... migration that depends on these attributes, e.g. updating
+  -- datasetfieldvalue rows based on the field being required ...
+END $$;
+```
+
+The same pattern applies to `controlledvocabularyvalue` (e.g., verifying `strvalue`, `identifier`, or `datasetfieldtype_id` before using a CV value to update user data) and to `metadatablock` (verifying `name` or block membership).
+
+Both check patterns protect all upgrade paths — including this tool, release-by-release upgrades, and installations where admins have forgotten a TSV reload or have diverged locally from upstream definitions.
+
+#### Locally customized upstream metadata blocks
+
+For customized upstream metadata blocks (e.g., a modified `citation.tsv`), the risks are the same as with release-by-release upgrades:
+the next TSV reload overwrites local customizations.
+Admins with local customizations should diff their TSVs against upstream before running this tool and carefully reapply changes after the upgrade.
+
 ### Recommendations 🗒️
 
 - Always start from a reliable `pg_dump` backup
