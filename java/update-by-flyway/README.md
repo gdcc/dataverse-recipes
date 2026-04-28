@@ -199,6 +199,22 @@ Stop containers and clean generated files:
 mvn clean
 ``` 
 
+### Exploring
+
+If you want to examine the database contents before or after the migration without stopping, you have two choices.
+
+Only import the dump, then wait (non-blocking!):
+```bash
+mvn prepare-package
+```
+
+Migrate, then wait (non-blocking!):
+```bash
+mvn package
+```
+
+The container will listen on `${postgresql.host}:${postgresql.port}`, defaulting to `localhost:15432`.
+
 ### Use a different Dataverse tag
 
 To migrate using another Dataverse release tag:
