@@ -45,6 +45,7 @@
         <postgresql.db>dataverse</postgresql.db>
         <postgresql.username>${postgresql.db}</postgresql.username>
         <postgresql.password>supersecret</postgresql.password>
+        <postgresql.command>postgres -c max_wal_size=8GB -c checkpoint_timeout=30min -c checkpoint_completion_target=0.9</postgresql.command>
         <postgresql.dump.file>${project.basedir}/db_dump.sql</postgresql.dump.file>
         <postgresql.dump.file.ext>sql</postgresql.dump.file.ext>
         <postgresql.dump.target>${project.build.directory}</postgresql.dump.target>
@@ -99,6 +100,9 @@
                                 <skip>true</skip>
                             </build>
                             <run>
+                                <cmd>
+                                    <shell>${postgresql.command}</shell>
+                                </cmd>
                                 <network>
                                     <mode>custom</mode>
                                     <name>migration</name>
