@@ -14,13 +14,17 @@ The recipe works by:
 2. starting a local PostgreSQL database in Docker (Maven Docker Plugin),
 3. restoring a provided database dump into that database,
 4. running the Dataverse Flyway migration scripts while including the required extra migration scripts included with this recipe (Maven Flyway Plugin),
-5. exporting the migrated database again as a new SQL dump.
+5. running Flyway again but without the extra migrations and telling it to clean these up (which makes the dump compatible with Dataverse code again), 
+6. exporting the final migrated database as a new SQL dump, ready to be imported into the installation.
 
 The main output artifact is:
 
 - `target/migrated_db_dump.sql`
 
 Note: this may also help you upgrade to newer PostgreSQL versions by restoring the migrated dump.
+
+
+
 
 ## Prerequisites ✔️
 
@@ -46,15 +50,15 @@ Before using this recipe, make sure you have:
 
 Because all migration work happens locally in Docker, it is generally safe to experiment with a production snapshot as long as you understand that this recipe is not an official upgrade mechanism.
 
-**Q: What about potential data migrations for metadata blocks, fields and CVs?**
+#### What about potential data migrations for metadata blocks, fields and CVs?
 
-A: This tool produces a migrated database dump but does **not** load any TSV files.
+This tool produces a migrated database dump but does **not** load any TSV files.
 The admin will perform the final TSV reload (with the target version's TSVs) as part of deploying the new Dataverse version, following the standard upgrade procedure.
 The question below addresses whether skipping the *intermediate* TSV reloads (those that would have happened between the source and target versions in a release-by-release upgrade) is safe.
 
 We need to distinguish between "data definition migration" and "user data migration" scenarios.
 
-#### Data Definition Migration
+##### Data Definition Migration
 
 These are Flyway migrations that modify `metadatablock`, `datasetfieldtype`, `controlledvocabularyvalue`, or related definitional tables.
 
@@ -68,7 +72,7 @@ These are Flyway migrations that modify `metadatablock`, `datasetfieldtype`, `co
 Update/rename migrations specifically can only target state introduced by a *previous* TSV reload, since Dataverse's upgrade process has always asked admins to reload TSVs *after* deploying, never before.
 So on a too-old source DB they silently no-op, and on a sufficiently up-to-date source DB they apply normally - never silently wrong.
 
-#### User Data Migration
+##### User Data Migration
 
 If a Flyway migration updates user data (`datasetfield`, `datasetfieldvalue`) based on assumptions about which fields or CV values exist or have a certain state, we could be in trouble:
 those assumptions may have been valid only after an intermediate TSV reload - which this tool skips.
@@ -92,7 +96,7 @@ This grep covers only SQL migrations. If Java-based Flyway migrations are added 
 None of these update user-entered data based on assumptions about TSV-loaded state.
 Schema changes, uniform sanitization, and idempotent renames only. ✅
 
-#### Requirement for future migrations
+##### Requirement for future migrations
 
 Any future migration that updates user data based on metadata-block state **must** explicitly verify its expected starting state and fail loudly if the state is absent or unexpected.
 Two patterns to be aware of:
@@ -140,7 +144,7 @@ The same pattern applies to `controlledvocabularyvalue` (e.g., verifying `strval
 
 Both check patterns protect all upgrade paths — including this tool, release-by-release upgrades, and installations where admins have forgotten a TSV reload or have diverged locally from upstream definitions.
 
-#### Locally customized upstream metadata blocks
+##### Locally customized upstream metadata blocks
 
 For customized upstream metadata blocks (e.g., a modified `citation.tsv`), the risks are the same as with release-by-release upgrades:
 the next TSV reload overwrites local customizations.
@@ -154,11 +158,17 @@ Admins with local customizations should diff their TSVs against upstream before 
 - Keep in mind that this recipe is a practical migration aid, not an official Dataverse-supported upgrade method
 - Validate the migrated database before using it further in any environment
 
+
+
+
 ## Installation instructions 🔧
 
 1. Clone this recipe repository and change your working directory to `java/update-by-flyway`.
 2. Make sure Docker is running.
 3. Place your PostgreSQL dump where the recipe can read it or override the dump file location with a Maven property (see below).
+
+
+
 
 ## Usage examples 💻
 
@@ -244,6 +254,17 @@ At the moment, this migration mainly serves as a detection and guidance step.
 It checks for affected metadata values and emits notices explaining the situation.
 This is useful when reviewing upgrade issues around Dataverse 6.3 and related metadata handling.
 
+### Run additional, local migrations
+
+In case you are migrating from a fork back to upstream code, you might want to add additional data migrations.
+You may put these in a folder and point to it by Maven property:
+
+```bash
+mvn install -Dmigrate.local=path/to/your/local/migrations
+```
+
+
+
 ## Important Maven properties ⚙️
 
 These are the most useful properties to override when running the recipe.
@@ -305,6 +326,9 @@ These are the most useful properties to override when running the recipe.
 - `migrate.keywordTermUri`  
   Enables handling related to keyword term URI migration checks (default: `false`)
 
+- `migrate.local`
+  Point to directory with additional, local migration scripts. Skipped if it does not exist. (default: `${project.basedir}/local`)
+
 ### Docker execution control
 
 These are mostly useful for debugging or partial reruns:
@@ -313,6 +337,9 @@ These are mostly useful for debugging or partial reruns:
 - `docker.skipStart`
 - `docker.skipDump`
 - `docker.skipStop`
+
+
+
 
 ## Dependencies 📦
 
@@ -330,6 +357,9 @@ It will automatically pull in these dependencies:
 - **Docker Maven Plugin**
 
 It also depends on access to the Dataverse Git repository, so the main migration scripts for the configured tag can be checked out locally.
+
+
+
 
 ## Support 💬
 

@@ -51,6 +51,9 @@
         <!-- Default: wait for 30s (DMP default is 10s) -->
         <postgresql.waitForSec>30</postgresql.waitForSec>
         
+        <migrate.extras>${project.basedir}/extra-migrations</migrate.extras>
+        <migrate.local>${project.basedir}/local</migrate.local>
+        
         <!-- Migrations Placeholders -->
         <!-- See https://github.com/IQSS/dataverse/releases/tag/v6.3#upgrade-instructions-6-3, https://github.com/IQSS/dataverse/pull/10371  -->
         <migrate.keywordTermUri>false</migrate.keywordTermUri>
@@ -69,6 +72,7 @@
                     <scmVersionType>tag</scmVersionType>
                     <scmVersion>${repo.tag}</scmVersion>
                     <shallow>true</shallow>
+                    <skipCheckoutIfExists>true</skipCheckoutIfExists>
                 </configuration>
                 <executions>
                     <execution>
@@ -278,7 +282,8 @@
                             <outOfOrder>true</outOfOrder>
                             <locations>
                                 <location>filesystem:${repo.directory}/${repo.subpath}</location>
-                                <location>filesystem:extra-migrations</location>
+                                <location>filesystem:${migrate.extras}</location>
+                                <location>filesystem:${migrate.local}</location>
                             </locations>
                             <placeholders>
                                 <V6_3_migrate_keywordTermUri>${migrate.keywordTermUri}</V6_3_migrate_keywordTermUri>
