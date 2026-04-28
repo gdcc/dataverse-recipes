@@ -48,8 +48,8 @@
         <postgresql.dump.file>${project.basedir}/db_dump.sql</postgresql.dump.file>
         <postgresql.dump.file.ext>sql</postgresql.dump.file.ext>
         <postgresql.dump.target>${project.build.directory}</postgresql.dump.target>
-        <!-- Default: wait for 30s (DMP default is 10s) -->
-        <postgresql.waitForSec>30</postgresql.waitForSec>
+        <!-- Default: wait for 10m (DMP default is 10s) -->
+        <postgresql.waitForSec>600</postgresql.waitForSec>
         
         <migrate.extras>${project.basedir}/extra-migrations</migrate.extras>
         <migrate.local>${project.basedir}/local</migrate.local>

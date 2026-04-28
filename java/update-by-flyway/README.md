@@ -187,6 +187,10 @@ This will:
 - apply Flyway migrations
 - apply the required extra migrations shipped with this recipe
 - export the migrated database as `target/migrated_db_dump.sql`
+- stop the container and remove it
+
+Note: for most production setups, the database dump is quite huge.
+Make sure to inspect the `postgresql.waitForSec` to allow for ample time of restoring the DB from the dump.
 
 ### Cleanup
 
@@ -316,7 +320,7 @@ These are the most useful properties to override when running the recipe.
   Database password (default: `supersecret`)
 
 - `postgresql.waitForSec`  
-  Time to wait for PostgreSQL startup and dump operations (default: `30`)
+  Time to wait for PostgreSQL startup and dump operations (default: `600` = 10 minutes)
 
 ### Migration behavior flags
 
