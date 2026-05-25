@@ -8,10 +8,21 @@ names preserved. Useful for ad-hoc inspection, batch tooling, or any
 local-filesystem-shaped pipeline (a Python notebook, a converter, a
 checksum sweep) without copying the bytes out of S3.
 
-The implementation runs `s3fs` inside a Docker container that
-bind-mounts a directory from the host with `:rshared` propagation, so
-the s3fs FUSE mount and the friendly-name symlinks both appear on the
-host filesystem — no SMB / WebDAV / NFS layer in front of them.
+The script picks the right execution mode automatically based on your
+OS:
+
+- **Linux / WSL2** — runs `s3fs` inside a Docker container that
+  bind-mounts a host directory with `:rshared` propagation. The host's
+  only dependency is Docker (plus standard shell tools); `s3fs`,
+  `python3` and friends live inside the container image.
+- **macOS** — runs `s3fs` natively on the host. Docker Desktop's
+  host↔VM file sharing does not propagate in-container FUSE mounts on
+  macOS, so the Docker path can't work there; native s3fs (via
+  macFUSE) does. The script checks for the required tools and points
+  at the exact `brew install` commands if anything is missing.
+
+Both paths produce the same on-disk layout, so `unmount_dataset.sh`,
+the `files/` tree, and everything downstream are identical.
 
 ## Features
 
@@ -26,19 +37,12 @@ host filesystem — no SMB / WebDAV / NFS layer in front of them.
 
 ## Platform support
 
-| Host | Status | Notes |
+| Host | Status | Mode |
 |---|---|---|
-| **Linux** | Supported | Native FUSE — works out of the box. |
-| **Windows (WSL2)** | Supported | Run from inside a WSL2 distro; the mount lives at the Linux path you pass for `MOUNT_POINT` and is reachable from Windows Explorer at `\\wsl$\<distro>\<path>`. |
-| **macOS** | Limited | The symlinks appear on the macOS host, but the s3fs bytes do not. See "macOS notes" below. |
+| **Linux** | Supported | Docker (no host-side `s3fs`/`python3` install). |
+| **Windows (WSL2)** | Supported | Docker, same as Linux — run from inside the WSL2 distro; reachable from Windows Explorer at `\\wsl$\<distro>\<path>`. |
+| **macOS** | Supported | Native `s3fs` via macFUSE. The script detects macOS and switches modes automatically. |
 | **Native Windows** | Not supported | Use WSL2. |
-
-The macOS limitation isn't a bug in this script — it's how Docker
-Desktop's host↔VM file sharing works. The s3fs FUSE mount runs inside
-the Linux VM that Docker Desktop manages, and the VirtioFS / gRPC FUSE
-layer that bridges files between the VM and macOS doesn't propagate
-FUSE mounts that originate inside a container. The directory tree
-(symlinks) gets through fine; the bytes the symlinks point to do not.
 
 ## What you need to install
 
@@ -62,45 +66,59 @@ from Windows Explorer via `\\wsl$\<distro>\<path>`.
 
 ### macOS
 
-You have three honest options on macOS:
+```bash
+brew install --cask macfuse            # FUSE for macOS
+brew install gromgit/fuse/s3fs-mac     # s3fs built against macFUSE
+brew install python                    # if python3 is not already present
+```
 
-1. **Use the script as-is** — the friendly symlink tree appears on the
-   host filesystem (you'll see `files/...` populated immediately), but
-   the symlinks resolve to a `.s3/` directory whose contents are not
-   propagated up from the container. So `ls files/` works, but
-   `cat files/some-file.csv` does not. Useful for inspecting the
-   *structure* of a dataset without downloading its bytes.
-2. **Run the script inside a Linux VM** (Lima, Colima, OrbStack with a
-   Linux machine, etc.) and access the mount from inside that VM. From
-   there it behaves like Linux.
-3. **Mount the bucket natively** without this script — install
-   [macFUSE](https://osxfuse.github.io/) and
-   [s3fs-fuse for macOS](https://github.com/awsgeek/s3fs-fuse), then
-   mount the bucket directly with the `s3fs` CLI. You lose the
-   friendly-name layer (you'll see hash filenames inside the bucket
-   path), but you get fully working file reads.
+After installing macFUSE you must approve the system extension in
+**System Settings → Privacy & Security**, then reboot. This is a
+one-time setup imposed by macOS, not by this recipe.
 
-There is no Docker-only path to a fully working macOS mount of an
-in-container FUSE filesystem today.
+`bash` and `curl` ship with macOS. The script checks for the three
+tools above on every run and prints the exact `brew install` commands
+again if any are missing.
+
+Why no Docker on macOS? Docker Desktop runs containers inside a Linux
+VM and bridges files between that VM and macOS via VirtioFS / gRPC
+FUSE. That bridge handles regular file contents but does not propagate
+FUSE mounts that originate inside the container, so an s3fs mount made
+in a container is invisible to native macOS apps. Running s3fs
+natively on macOS sidesteps the bridge entirely.
 
 ## How it works
+
+Common steps (both modes):
 
 1. `mount_dataset.sh` fetches the dataset's file list from
    `GET /api/datasets/:persistentId/versions/<v>/files`. If `DV_TOKEN`
    is set, the request is authenticated with `X-Dataverse-key`;
    without it, only public-dataset access is possible.
-2. The script builds the `rdm-dataset-mount:local` image (first run
-   only) and starts a container that:
-   - Bind-mounts `<MOUNT_POINT>` from the host to `/mount` inside the
-     container with `:rshared` propagation.
-   - Builds relative symlinks at `/mount/files/<directoryLabel>/<label>`
-     pointing into `/mount/.s3/<identifier>/...`.
-   - `chown`s the friendly tree and the empty mount points to the host
-     user's UID/GID.
-   - Runs `s3fs` in the foreground to mount the bucket at `/mount/.s3`.
-3. On Linux (and WSL2), the `:rshared` propagation means everything in
-   `/mount` inside the container is visible at `<MOUNT_POINT>` on the
-   host — including the FUSE mount.
+2. `<MOUNT_POINT>/.s3/` and `<MOUNT_POINT>/files/` are created on the
+   host, and the friendly tree is built as relative symlinks from
+   `files/<directoryLabel>/<label>` into `../../.s3/<identifier>/...`.
+
+**Linux / WSL2 (Docker mode):**
+
+3a. The script builds the `rdm-dataset-mount:local` image (first run
+    only) and starts a container that bind-mounts `<MOUNT_POINT>` to
+    `/mount` inside the container with `:rshared` propagation, then
+    runs `s3fs` in the foreground to mount the bucket at `/mount/.s3`.
+    The container also `chown`s the symlinks to the host user, so the
+    on-disk tree is owned by you without `sudo`.
+4a. The `:rshared` propagation makes the in-container FUSE mount
+    visible on the host at `<MOUNT_POINT>/.s3`, so the symlinks under
+    `files/` resolve to real S3-backed bytes.
+
+**macOS (native mode):**
+
+3b. The script verifies `s3fs`, `python3`, and macFUSE are installed
+    (printing `brew install` commands if not), then writes the S3
+    credentials to a 0600 tempfile and runs `s3fs` natively. The FUSE
+    mount happens directly on the macOS filesystem, no Docker.
+4b. `python3` runs `dataset-mount/build_symlinks.py` directly on the
+    host to build the symlink tree.
 
 ```
 <MOUNT_POINT>/
@@ -217,26 +235,37 @@ python3 -c "import pandas as pd; print(pd.read_csv('/tmp/mydataset/files/raw/dat
 - **Latency.** Every byte read is a remote S3 call. Sequential reads
   are fine; random-access patterns over large binary files will be
   slow.
-- **First-run build time.** The `rdm-dataset-mount:local` image is
-  built from [`dataset-mount/Dockerfile`](dataset-mount/Dockerfile) on
-  first invocation (Debian-slim + s3fs + python3, roughly 20 s).
-  Subsequent runs use the cached image.
-- **Stale containers.** If `mount_dataset.sh` is interrupted before
-  printing success, the container may be left running. Find it with
-  `docker ps --filter name=dv-mount-` and stop it with
-  `./unmount_dataset.sh <MOUNT_POINT>` or `docker stop <name>`.
+- **First-run build time (Linux/WSL2 only).** The
+  `rdm-dataset-mount:local` image is built from
+  [`dataset-mount/Dockerfile`](dataset-mount/Dockerfile) on first
+  invocation (Debian-slim + s3fs + python3, roughly 20 s). Subsequent
+  runs use the cached image. If you edit anything under `dataset-mount/`
+  later, `docker image rm rdm-dataset-mount:local` to force a rebuild.
+- **Stale containers (Linux/WSL2 only).** If `mount_dataset.sh` is
+  interrupted before printing success, the container may be left
+  running. Find it with `docker ps --filter name=dv-mount-` and stop
+  it with `./unmount_dataset.sh <MOUNT_POINT>` or `docker stop <name>`.
+- **macOS kernel-extension approval.** First-time macFUSE installs
+  require approving a system extension in **System Settings → Privacy
+  & Security**, followed by a reboot. macOS will keep blocking the
+  s3fs mount with a cryptic "operation not permitted" error until that
+  approval is given.
 
 ## Files
 
-- `mount_dataset.sh` — entry point: fetches the dataset's file list,
-  builds the image if needed, starts the container, prints the host
-  mount paths.
-- `unmount_dataset.sh` — stops the container and cleans up the mount
-  point.
+- `mount_dataset.sh` — entry point: detects the OS, fetches the
+  dataset's file list, dispatches to the Docker path (Linux/WSL2) or
+  the native-s3fs path (macOS), prints the host mount paths.
+- `unmount_dataset.sh` — stops the Docker container if there is one,
+  unmounts the FUSE mount (`fusermount -uz` on Linux, `umount` on
+  macOS), and removes the mount point.
 - `sample.env` — template for the supported environment variables.
-- `dataset-mount/Dockerfile` — image definition (Debian-slim + s3fs +
-  python3 + tini).
-- `dataset-mount/entrypoint.sh` — runs inside the container: builds
-  symlinks, then execs s3fs in the foreground.
 - `dataset-mount/build_symlinks.py` — parses the Dataverse manifest
-  and creates the relative-path symlink tree.
+  and creates the relative-path symlink tree. Reused by both modes
+  (invoked inside the container on Linux/WSL2; invoked directly on
+  macOS).
+- `dataset-mount/Dockerfile` — image definition for the Linux/WSL2
+  path (Debian-slim + s3fs + python3 + tini). Unused on macOS.
+- `dataset-mount/entrypoint.sh` — runs inside the container on the
+  Linux/WSL2 path: builds symlinks, then execs s3fs in the foreground.
+  Unused on macOS.
