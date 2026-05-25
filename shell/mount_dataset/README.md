@@ -16,7 +16,7 @@ OS:
   only dependency is Docker (plus standard shell tools); `s3fs`,
   `python3` and friends live inside the container image.
 - **macOS** — runs `s3fs` natively on the host. Docker Desktop's
-  host↔VM file sharing does not propagate in-container FUSE mounts on
+  host-VM file sharing does not propagate in-container FUSE mounts on
   macOS, so the Docker path can't work there; native s3fs (via
   macFUSE) does. The script checks for the required tools and points
   at the exact `brew install` commands if anything is missing.
