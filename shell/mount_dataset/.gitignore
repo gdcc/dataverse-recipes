@@ -1,0 +1,3 @@
+# Runtime state (per-user; never committed)
+/data/
+/globus-state/

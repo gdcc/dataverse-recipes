@@ -1,271 +1,237 @@
-# Mount a Dataverse Dataset as a Local Filesystem
+# mount_dataset
 
-## Purpose
+Mount any [Dataverse](https://dataverse.org) dataset as a real
+filesystem with one command. Optionally publish the mount as a
+personal [Globus](https://www.globus.org) endpoint for fast
+cross-institution transfers.
 
-Expose a Dataverse dataset's files as a read-only directory on the local
-filesystem, with the dataset's folder structure and human-readable file
-names preserved. Useful for ad-hoc inspection, batch tooling, or any
-local-filesystem-shaped pipeline (a Python notebook, a converter, a
-checksum sweep) without copying the bytes out of S3.
+## What this does, in plain English
 
-The script picks the right execution mode automatically based on your
-OS:
+A Dataverse dataset is normally something you download file-by-file
+through a website. This recipe lets you **browse it as if it were a
+folder on your own computer** — with the original folder structure
+and filenames preserved. Open files in your editor, `ls` and `grep`
+them, point a script at them, whatever — they behave like real files.
+Under the hood the bytes are fetched on-demand from Dataverse, so
+there's no upfront download and no disk space needed for the whole
+dataset. That's the basic mode (`./mount.sh`).
 
-- **Linux / WSL2** — runs `s3fs` inside a Docker container that
-  bind-mounts a host directory with `:rshared` propagation. The host's
-  only dependency is Docker (plus standard shell tools); `s3fs`,
-  `python3` and friends live inside the container image.
-- **macOS** — runs `s3fs` natively on the host. Docker Desktop's
-  host-VM file sharing does not propagate in-container FUSE mounts on
-  macOS, so the Docker path can't work there; native s3fs (via
-  macFUSE) does. The script checks for the required tools and points
-  at the exact `brew install` commands if anything is missing.
+The second mode (`./mount-globus.sh`) layers a personal Globus
+endpoint on top of the same mount. Globus is the standard tool for
+moving TBs of research data between institutions — much faster and
+more resilient than scp/rsync over long distances. Run this script
+and your machine becomes a Globus endpoint serving the dataset
+(folder/file names preserved at the destination); point any other
+Globus endpoint at it — say your HPC cluster's scratch storage —
+and Globus pulls the whole dataset over.
 
-Both paths produce the same on-disk layout, so `unmount_dataset.sh`,
-the `files/` tree, and everything downstream are identical.
+**Almost no setup.** Three pieces of information: the Dataverse URL,
+the dataset DOI, and optionally an API token if the files aren't
+public. The Globus mode adds one extra one-time browser login (the
+script walks you through it) — credentials persist locally so later
+runs go straight to "endpoint online."
 
-## Features
+**Nothing required from anyone else.** No paid Globus subscription,
+no Globus Connect Server, no Globus S3 connector, no Dataverse-side
+plugin, no operator changes. The traditional "Dataverse + managed
+Globus" path needs all of those — usually only realistic for
+institutions with dedicated data-engineering staff. This recipe
+needs none of them: it talks to any standard Dataverse and runs
+Globus Connect Personal under Globus's free tier. Everything happens
+inside one Docker container on your own machine.
 
-- Preserves directory labels and display names from Dataverse —
-  `files/raw/data.csv` rather than `42` or `s3://bucket/abc...`.
-- Optional Dataverse API key: public datasets work without one; provide
-  a key to reach drafts and restricted files the key can read.
-- Read-only by design (`s3fs ... ro`).
-- Bytes stream from S3 on demand — nothing is copied to local disk.
-- The container runs s3fs as the host user, so the symlinks on the host
-  are owned by you (no `sudo` needed to browse or remove them).
+```text
+           ┌──────────────────────────┐
+           │   docker container       │
+           │  ┌────────────────────┐  │     Dataverse  ──► presigned S3 URL
+ ./data ◄──┼──┤ FUSE mount         │  │           ▲
+  (host)   │  │ rclone backend     │──┼───────────┘
+           │  └────────────────────┘  │
+           │  ┌────────────────────┐  │
+           │  │ (optional)         │  │     Globus Transfer ◄── any
+           │  │ Globus Connect     │  │                          Globus
+           │  │ Personal           │  │                          client
+           │  └────────────────────┘  │
+           └──────────────────────────┘
+```
 
-## Platform support
+## Quickstart
 
-| Host | Status | Mode |
-|---|---|---|
-| **Linux** | Supported | Docker (no host-side `s3fs`/`python3` install). |
-| **Windows (WSL2)** | Supported | Docker, same as Linux — run from inside the WSL2 distro; reachable from Windows Explorer at `\\wsl$\<distro>\<path>`. |
-| **macOS** | Supported | Native `s3fs` via macFUSE. The script detects macOS and switches modes automatically. |
-| **Native Windows** | Not supported | Use WSL2. |
-
-## What you need to install
-
-### Linux
-
-- Docker Engine. The Compose plugin is not required for these scripts.
-- `bash`, `curl`, `sha1sum` — present on every standard distro.
-
-That's it. Everything else (`s3fs`, `python3`, `tini`) ships inside the
-Docker image that `mount_dataset.sh` builds on first run.
-
-### Windows (WSL2)
-
-- WSL2 with a Linux distribution installed (Ubuntu, Debian, etc.).
-- Docker Desktop with the WSL2 integration enabled for that distro,
-  *or* Docker Engine installed inside the distro.
-
-Then run the script from inside the WSL2 shell. The mount appears at
-the path you pass for `MOUNT_POINT` inside the distro and is reachable
-from Windows Explorer via `\\wsl$\<distro>\<path>`.
-
-### macOS
+The recipe is one folder in a larger `dataverse-recipes` repository.
+A sparse checkout pulls just this directory so you don't fetch the
+whole repo:
 
 ```bash
-brew install --cask macfuse            # FUSE for macOS
-brew install gromgit/fuse/s3fs-mac     # s3fs built against macFUSE
-brew install python                    # if python3 is not already present
+git clone --depth 1 --filter=blob:none --sparse \
+  https://github.com/gdcc/dataverse-recipes.git
+cd dataverse-recipes
+git sparse-checkout add shell/mount_dataset
+cd shell/mount_dataset
+./mount.sh
 ```
 
-After installing macFUSE you must approve the system extension in
-**System Settings → Privacy & Security**, then reboot. This is a
-one-time setup imposed by macOS, not by this recipe.
-
-`bash` and `curl` ship with macOS. The script checks for the three
-tools above on every run and prints the exact `brew install` commands
-again if any are missing.
-
-Why no Docker on macOS? Docker Desktop runs containers inside a Linux
-VM and bridges files between that VM and macOS via VirtioFS / gRPC
-FUSE. That bridge handles regular file contents but does not propagate
-FUSE mounts that originate inside the container, so an s3fs mount made
-in a container is invisible to native macOS apps. Running s3fs
-natively on macOS sidesteps the bridge entirely.
-
-## How it works
-
-Common steps (both modes):
-
-1. `mount_dataset.sh` fetches the dataset's file list from
-   `GET /api/datasets/:persistentId/versions/<v>/files`. If `DV_TOKEN`
-   is set, the request is authenticated with `X-Dataverse-key`;
-   without it, only public-dataset access is possible.
-2. `<MOUNT_POINT>/.s3/` and `<MOUNT_POINT>/files/` are created on the
-   host, and the friendly tree is built as relative symlinks from
-   `files/<directoryLabel>/<label>` into `../../.s3/<identifier>/...`.
-
-**Linux / WSL2 (Docker mode):**
-
-3a. The script builds the `rdm-dataset-mount:local` image (first run
-    only) and starts a container that bind-mounts `<MOUNT_POINT>` to
-    `/mount` inside the container with `:rshared` propagation, then
-    runs `s3fs` in the foreground to mount the bucket at `/mount/.s3`.
-    The container also `chown`s the symlinks to the host user, so the
-    on-disk tree is owned by you without `sudo`.
-4a. The `:rshared` propagation makes the in-container FUSE mount
-    visible on the host at `<MOUNT_POINT>/.s3`, so the symlinks under
-    `files/` resolve to real S3-backed bytes.
-
-**macOS (native mode):**
-
-3b. The script verifies `s3fs`, `python3`, and macFUSE are installed
-    (printing `brew install` commands if not), then writes the S3
-    credentials to a 0600 tempfile and runs `s3fs` natively. The FUSE
-    mount happens directly on the macOS filesystem, no Docker.
-4b. `python3` runs `dataset-mount/build_symlinks.py` directly on the
-    host to build the symlink tree.
-
-```
-<MOUNT_POINT>/
-├── .s3/                       # s3fs mount of the bucket (read-only)
-│   └── <authority>/<identifier>/<storageIdentifier>
-└── files/                     # friendly tree (relative symlinks into .s3/)
-    ├── raw/
-    │   └── data.csv -> ../../.s3/10.5072/FK2/ABCDEF/abc123-deadbeef
-    └── docs/
-        └── readme.md -> ../../.s3/10.5072/FK2/ABCDEF/def789-cafebabe
-```
-
-The symlinks use relative paths so they resolve from both the
-container's view (`/mount/files -> /mount/.s3`) and the host's view
-(`<MOUNT_POINT>/files -> <MOUNT_POINT>/.s3`).
-
-Reads of any file under `<MOUNT_POINT>/files/...` are served directly
-from S3 on demand — nothing is copied to local disk.
-
-## Inputs
-
-All inputs are environment variables. Set them inline on the command
-line, or copy `sample.env` to `.env` next to the script and edit it
-(the script sources `.env` automatically if present).
-
-| Variable | Required | Purpose |
-|---|---|---|
-| `DV_URL` | yes | Dataverse base URL, e.g. `https://demo.dataverse.org`. |
-| `DV_PID` | yes | Dataset persistent ID, e.g. `doi:10.5072/FK2/XXXXX`. |
-| `S3_ENDPOINT` | yes | S3 endpoint URL. |
-| `S3_ACCESS_KEY` | yes | S3 access key ID. |
-| `S3_SECRET_KEY` | yes | S3 secret access key. |
-| `DV_TOKEN` | no | Dataverse API key. Omit for public-only access. |
-| `DV_VERSION` | no | Dataset version, default `:latest`. |
-| `S3_BUCKET` | no | S3 bucket name, default `dataverse`. |
-| `USE_PATH_STYLE` | no | `1` (default) = path-style S3 addressing, `0` = virtual-host. |
-| `MOUNT_POINT` | no | Host path to mount the dataset into, default `./mount-<identifier>`. |
-
-## Examples
-
-### Public dataset, default mount point
+On the first run, `mount.sh` prompts for your Dataverse URL, dataset
+DOI, and (optionally) an API token, saves them to `.env`, builds the
+Docker image, and brings the mount up at `./data` in the foreground.
+Ctrl-C unmounts cleanly. Subsequent runs read `.env` and just go.
 
 ```bash
-DV_URL=https://demo.dataverse.org \
-DV_PID=doi:10.5072/FK2/PUBLIC1 \
-S3_ENDPOINT=https://s3.example.com \
-S3_ACCESS_KEY=AKIA... \
-S3_SECRET_KEY=... \
-./mount_dataset.sh
+# In another terminal, while mount.sh is running:
+ls -R ./data
+cat ./data/path/to/file.txt
 ```
 
-Output:
+## Prerequisites
 
-```
-linked 12 file(s)
+- Docker (Engine on Linux; Docker Desktop on macOS or WSL2 on
+  Windows).
+- For the Globus mode: a free Globus account at
+  https://app.globus.org.
 
-Dataset mounted at: /home/me/mount-10.5072_FK2_PUBLIC1/files
-  s3 bucket at:     /home/me/mount-10.5072_FK2_PUBLIC1/.s3
-  container:        dv-mount-abc123def456
+### Platform notes
 
-Tear down with:
-  ./unmount_dataset.sh '/home/me/mount-10.5072_FK2_PUBLIC1'
-```
+| Platform        | Mount mode                                     | Globus mode  |
+| ---             | ---                                            | ---          |
+| Linux           | ✅ full host visibility via bind-mount         | ✅ full       |
+| WSL2 (Windows)  | ✅ same as Linux (clone *inside* WSL for speed) | ✅ full       |
+| macOS           | ⚠️ visible inside container only (see below)    | ✅ full       |
 
-### Private dataset, explicit mount point
+On macOS, Docker Desktop runs containers inside a hidden Linux VM.
+FUSE works fine inside that VM, but the mount events don't propagate
+back to the macOS filesystem — so `./data` on the host won't show
+files even while the container is happily serving them. Two
+workarounds: (a) browse via `docker exec -it dv-mount ls /mnt/dataset`,
+or (b) use the Globus mode and pull the dataset to a Globus endpoint
+running natively on your Mac.
+
+## Four scripts
+
+- **`./mount.sh`** — mount the dataset on `./data` in the foreground.
+  Ctrl-C unmounts.
+- **`./mount-globus.sh`** — mount + publish as a Globus endpoint. On
+  first run, walks you through the Globus device-code login.
+- **`./unmount.sh`** — stop whichever container is running and clear
+  any stale FUSE mount.
+- **`./reset-globus.sh`** — wipe the local Globus endpoint state so
+  the next run registers a fresh endpoint. Prints the URL to delete
+  the endpoint on Globus's side too.
+
+## Configuration
+
+All settings live in `.env` (auto-created on first run from prompts;
+copy `sample.env` and edit by hand if you prefer).
+
+| Variable           | Required for         | Description |
+| ---                | ---                  | --- |
+| `DV_HOST`          | always               | Dataverse base URL, no trailing slash. |
+| `DATASET_PID`      | always               | Persistent ID, e.g. `doi:10.5072/FK2/ABCD`. |
+| `DV_TOKEN`         | optional             | Dataverse API token. Blank → guest access. |
+| `DATASET_VERSION`  | optional             | `:latest` (default), `:draft`, `:latest-published`, or `1.0`/`2.0`/…. |
+| `INGEST_FORMAT`    | optional             | `original` (default) or `archival`. |
+| `VFS_CACHE_MODE`   | optional             | rclone VFS cache mode. Default `minimal`. |
+| `VFS_CACHE_MAX_AGE`| optional             | How long cached bytes stay valid. Default `1h`. |
+| `RCLONE_LOG_LEVEL` | optional             | `DEBUG`/`INFO`/`NOTICE`/`ERROR`. Default `INFO`. |
+
+## What happens during restarts and interruptions
+
+- **Container restart / host reboot / laptop sleep.** Globus Transfer
+  tracks each task server-side. When the endpoint disconnects
+  mid-transfer the task pauses and resumes once the endpoint comes
+  back. On our side, restarting the script re-fetches the file list,
+  re-uses the Globus credentials in `./globus-state/`, and the
+  endpoint reconnects automatically.
+- **Presigned-URL expiry mid-stream** (long single-file transfer
+  through a 1-hour AWS URL TTL). The rclone backend detects this,
+  fetches a fresh URL, and re-issues with `Range: bytes=N-` —
+  invisibly to the caller.
+- **Dataset gets a new version while we're running.** The file list
+  is frozen at mount time so it can't shift under an in-progress
+  transfer. New / removed files only show up after a restart.
+
+## Resetting for a demo or fresh start
+
+The Globus endpoint has two halves: local credentials in
+`./globus-state/` and a registered endpoint on Globus's side.
 
 ```bash
-DV_URL=https://my.dataverse.example \
-DV_TOKEN=11111111-2222-3333-4444-555555555555 \
-DV_PID=doi:10.5072/FK2/PRIVATE \
-DV_VERSION=:draft \
-S3_ENDPOINT=https://s3.example.com \
-S3_ACCESS_KEY=... S3_SECRET_KEY=... \
-MOUNT_POINT=/tmp/mydataset \
-./mount_dataset.sh
+./unmount.sh        # stop the container if it's running
+./reset-globus.sh   # wipe ./globus-state/
 ```
 
-### Inspecting the mount
+Then open https://app.globus.org/file-manager/collections, find the
+endpoint (named whatever you typed during setup, default
+`dataverse-mount-<hostname>`), menu → **Delete**.
+
+Next `./mount-globus.sh` walks you through registering a fresh
+endpoint from scratch.
+
+## Tabular files (CSV, Stata, SPSS, …)
+
+Dataverse "ingests" tabular uploads: it parses the file and stores
+both the original bytes and a normalised `.tab` archival form. The
+default (`INGEST_FORMAT=original`) exposes the file under its
+original name with a verifiable MD5 — what most users want. Set
+`INGEST_FORMAT=archival` to expose Dataverse's post-ingest form
+instead (no MD5, no reliable size).
+
+## Read-only
+
+The backend is intentionally read-only:
+
+- `Put`, `Update`, `Remove`, `Mkdir`, `Rmdir` all return errors.
+- `rclone mount` runs with `--read-only`.
+
+Globus transfers **from** this endpoint to elsewhere work; transfers
+**to** this endpoint don't. To upload, use the Dataverse UI or its
+Native API directly.
+
+## Under the hood
+
+The Docker image is built locally on first run. It's a multi-stage
+build:
+
+- Stage 1 (`golang:1.25`): clones a fork of [rclone](https://rclone.org)
+  that adds the Dataverse backend (read-only, presigned-URL caching,
+  tabular-ingest handling, mid-stream resume on long transfers) and
+  compiles the `rclone` binary.
+- Stage 2 (`debian:bookworm-slim`): FUSE3, `tini`, `ca-certificates`,
+  and — when built with `--build-arg INCLUDE_GLOBUS=1` (which
+  `mount-globus.sh` does automatically) — Globus Connect Personal.
+
+The rclone fork lives at
+[ErykKul/rclone, branch `dataverse-backend`](https://github.com/ErykKul/rclone/tree/dataverse-backend/backend/dataverse).
+When the backend is upstreamed (proposal in flight at
+[rclone/rclone](https://github.com/rclone/rclone)) the Dockerfile's
+build args will point at upstream and this note goes away.
+
+## Building from source manually
+
+The scripts auto-build on first run. To build by hand:
 
 ```bash
-ls /tmp/mydataset/files                       # see the dataset's directory layout
-md5sum /tmp/mydataset/files/raw/data.csv
-python3 -c "import pandas as pd; print(pd.read_csv('/tmp/mydataset/files/raw/data.csv').head())"
+docker build -t dataverse-mount:local .                                      # mount-only
+docker build --build-arg INCLUDE_GLOBUS=1 -t dataverse-mount:local-globus .  # + Globus
 ```
 
-### Tear down
+Build against a different rclone fork or branch (e.g. for testing
+backend changes):
 
 ```bash
-./unmount_dataset.sh /tmp/mydataset
+docker build \
+  --build-arg RCLONE_REPO=https://github.com/your-fork/rclone.git \
+  --build-arg RCLONE_REF=your-branch \
+  -t dataverse-mount:local .
 ```
 
-## Permissions and access model
+## License
 
-- The Dataverse API call honours `DV_TOKEN` (if provided): a file
-  appears in the listing only when the token can read it. Without a
-  token, only files visible to anonymous users appear.
-- The actual byte read of any listed file goes through the s3fs mount
-  inside the container, using `S3_ACCESS_KEY` / `S3_SECRET_KEY`. Those
-  need read access to the bucket. If a file is listed by the API but
-  the S3 credentials can't read its object, `cat <file>` fails with a
-  permission error from the s3fs layer; the symlink still exists.
-- The mount is read-only.
-- The symlinks on the host are owned by you (UID/GID passed through to
-  the container). You can browse, read, or delete them without `sudo`.
+The recipe itself follows the
+[dataverse-recipes top-level LICENSE](../../LICENSE).
 
-## Caveats
+The image bundles:
 
-- **Ingested tabular files.** When Dataverse ingests a `.sav`/`.dta`/
-  etc. file, the storage identifier in the API response points to the
-  ingested TSV variant, not the original upload. Reading
-  `files/foo.sav` therefore serves the converted TSV bytes. Use the
-  Dataverse access API with `?format=original` if you need the
-  original-format bytes.
-- **Latency.** Every byte read is a remote S3 call. Sequential reads
-  are fine; random-access patterns over large binary files will be
-  slow.
-- **First-run build time (Linux/WSL2 only).** The
-  `rdm-dataset-mount:local` image is built from
-  [`dataset-mount/Dockerfile`](dataset-mount/Dockerfile) on first
-  invocation (Debian-slim + s3fs + python3, roughly 20 s). Subsequent
-  runs use the cached image. If you edit anything under `dataset-mount/`
-  later, `docker image rm rdm-dataset-mount:local` to force a rebuild.
-- **Stale containers (Linux/WSL2 only).** If `mount_dataset.sh` is
-  interrupted before printing success, the container may be left
-  running. Find it with `docker ps --filter name=dv-mount-` and stop
-  it with `./unmount_dataset.sh <MOUNT_POINT>` or `docker stop <name>`.
-- **macOS kernel-extension approval.** First-time macFUSE installs
-  require approving a system extension in **System Settings → Privacy
-  & Security**, followed by a reboot. macOS will keep blocking the
-  s3fs mount with a cryptic "operation not permitted" error until that
-  approval is given.
-
-## Files
-
-- `mount_dataset.sh` — entry point: detects the OS, fetches the
-  dataset's file list, dispatches to the Docker path (Linux/WSL2) or
-  the native-s3fs path (macOS), prints the host mount paths.
-- `unmount_dataset.sh` — stops the Docker container if there is one,
-  unmounts the FUSE mount (`fusermount -uz` on Linux, `umount` on
-  macOS), and removes the mount point.
-- `sample.env` — template for the supported environment variables.
-- `dataset-mount/build_symlinks.py` — parses the Dataverse manifest
-  and creates the relative-path symlink tree. Reused by both modes
-  (invoked inside the container on Linux/WSL2; invoked directly on
-  macOS).
-- `dataset-mount/Dockerfile` — image definition for the Linux/WSL2
-  path (Debian-slim + s3fs + python3 + tini). Unused on macOS.
-- `dataset-mount/entrypoint.sh` — runs inside the container on the
-  Linux/WSL2 path: builds symlinks, then execs s3fs in the foreground.
-  Unused on macOS.
+- rclone (MIT) at the pinned ref.
+- *(only when built with `INCLUDE_GLOBUS=1`)* Globus Connect Personal,
+  downloaded at build time from https://downloads.globus.org. GCP is
+  distributed under Globus's own license. See
+  https://www.globus.org/legal/license.
