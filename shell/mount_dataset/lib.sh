@@ -1,6 +1,6 @@
 #!/bin/bash
 # lib.sh — portable helpers shared by mount.sh / mount-globus.sh /
-# unmount.sh / reset-globus.sh.
+# unmount.sh / reset.sh.
 #
 # Sourced, never executed directly. Functions only; no top-level
 # side effects.

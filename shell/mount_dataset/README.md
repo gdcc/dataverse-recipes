@@ -112,9 +112,9 @@ running natively on your Mac.
   first run, walks you through the Globus device-code login.
 - **`./unmount.sh`** — stop whichever container is running and clear
   any stale FUSE mount.
-- **`./reset-globus.sh`** — wipe the local Globus endpoint state so
-  the next run registers a fresh endpoint. Prints the URL to delete
-  the endpoint on Globus's side too.
+- **`./reset.sh`** — wipe all local state for this recipe (`.env`,
+  `./data`, `./globus-state`) so the next run starts from scratch.
+  Prints the URL to delete the Globus endpoint on Globus's side too.
 
 ## Configuration
 
@@ -150,20 +150,22 @@ copy `sample.env` and edit by hand if you prefer).
 
 ## Resetting for a demo or fresh start
 
-The Globus endpoint has two halves: local credentials in
-`./globus-state/` and a registered endpoint on Globus's side.
+`./reset.sh` wipes all local state for this recipe: `.env`, `./data`,
+`./globus-state/`, and any legacy named Docker volume.
 
 ```bash
-./unmount.sh        # stop the container if it's running
-./reset-globus.sh   # wipe ./globus-state/
+./unmount.sh   # stop the container if it's running
+./reset.sh     # wipe .env + ./data + ./globus-state/
 ```
 
-Then open https://app.globus.org/file-manager/collections, find the
-endpoint (named whatever you typed during setup, default
+If you also registered a Globus endpoint, the endpoint stays on
+Globus's side until you delete it there too: open
+https://app.globus.org/file-manager/collections, find the endpoint
+(named whatever you typed during setup, default
 `dataverse-mount-<hostname>`), menu → **Delete**.
 
-Next `./mount-globus.sh` walks you through registering a fresh
-endpoint from scratch.
+Next `./mount.sh` or `./mount-globus.sh` walks you through the
+prompts again from a clean slate.
 
 ## Tabular files (CSV, Stata, SPSS, …)
 

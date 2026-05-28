@@ -4,7 +4,7 @@
 #
 # First run does a one-time Globus device-code login. Endpoint
 # credentials live in ./globus-state/ on the host (gitignored). To
-# fully wipe and re-register, use ./reset-globus.sh.
+# fully wipe and re-register, use ./reset.sh.
 set -euo pipefail
 
 cd "$(dirname "$0")"
