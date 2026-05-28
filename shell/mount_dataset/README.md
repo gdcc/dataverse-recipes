@@ -233,15 +233,19 @@ docker build -t dataverse-mount:local .                                      # m
 docker build --build-arg INCLUDE_GLOBUS=1 -t dataverse-mount:local-globus .  # + Globus
 ```
 
-Build against a different rclone fork or branch (e.g. for testing
-backend changes):
+Point the build at a different pre-built rclone binary (e.g. for
+testing backend changes from a different fork's release page):
 
 ```bash
 docker build \
-  --build-arg RCLONE_REPO=https://github.com/your-fork/rclone.git \
-  --build-arg RCLONE_REF=your-branch \
+  --build-arg RCLONE_BINARY_URL=https://example.com/path/to/rclone-linux-amd64 \
   -t dataverse-mount:local .
 ```
+
+Or override `RCLONE_RELEASE_BASE` if you mirror the binaries on a
+different host but keep the `rclone-linux-<arch>` naming. To test a
+locally-built rclone binary, skip the build args and `-v` mount your
+binary at runtime: `docker run -v $PWD/rclone:/usr/local/bin/rclone …`.
 
 ## Running without Docker (native rclone)
 
@@ -261,18 +265,23 @@ filesystem the way it does on Linux.
 
 **2. Install rclone with the Dataverse backend.** Until the backend
 lands upstream in [`rclone/rclone`](https://github.com/rclone/rclone),
-build from our fork:
+download a pre-built binary from the fork's release page at
+<https://github.com/ErykKul/rclone/releases/tag/dataverse-backend-latest>:
 
 ```bash
-git clone --branch dataverse-backend https://github.com/ErykKul/rclone
-cd rclone
-go build -o rclone .                          # needs Go 1.25+
+# Pick the file for your platform: rclone-linux-amd64,
+# rclone-linux-arm64, rclone-darwin-amd64, rclone-darwin-arm64,
+# or rclone-windows-amd64.exe.
+curl -fsSL -o rclone \
+  https://github.com/ErykKul/rclone/releases/download/dataverse-backend-latest/rclone-darwin-arm64
+chmod +x rclone
 ./rclone version | head -1                    # smoke test
 ```
 
-When the backend is upstreamed, switch to the official packages:
-`brew install rclone` / `winget install Rclone.Rclone` /
-`apt install rclone`.
+(Or `go build` from `ErykKul/rclone` branch `dataverse-backend` if you
+prefer building from source — needs Go 1.25+.) When the backend is
+upstreamed, switch to the official packages: `brew install rclone` /
+`winget install Rclone.Rclone` / `apt install rclone`.
 
 **3. Configure a remote:**
 
