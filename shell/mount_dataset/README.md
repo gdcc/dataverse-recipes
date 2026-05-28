@@ -110,10 +110,12 @@ cat ./data/path/to/file.txt
 On macOS, Docker Desktop runs containers inside a hidden Linux VM.
 FUSE works fine inside that VM, but the mount events don't propagate
 back to the macOS filesystem — so `./data` on the host won't show
-files even while the container is happily serving them. Two
+files even while the container is happily serving them. Three
 workarounds: (a) browse via `docker exec -it dv-mount ls /mnt/dataset`,
-or (b) use the Globus mode and pull the dataset to a Globus endpoint
-running natively on your Mac.
+(b) use the Globus mode and pull the dataset to a Globus endpoint
+running natively on your Mac, or (c) skip Docker entirely and run
+rclone natively — see [Running without Docker](#running-without-docker-native-rclone)
+below.
 
 ## Four scripts
 
@@ -240,6 +242,63 @@ docker build \
   --build-arg RCLONE_REF=your-branch \
   -t dataverse-mount:local .
 ```
+
+## Running without Docker (native rclone)
+
+The Docker-based scripts above are the supported path, but everything
+in this recipe also works with rclone installed natively on the host.
+Useful especially on macOS to bypass Docker Desktop's FUSE-in-VM
+limitation — a native rclone mount surfaces directly on the host
+filesystem the way it does on Linux.
+
+**1. Install a FUSE driver:**
+
+| Platform | FUSE driver | Install |
+| ---      | ---         | ---     |
+| Linux    | kernel FUSE3 | `apt install fuse3` (or distro equivalent) |
+| macOS    | [macFUSE](https://osxfuse.github.io) | `brew install --cask macfuse`, then approve the kext in Recovery Mode on Apple Silicon / recent Intel — or skip the kext entirely and use rclone's experimental `nfsmount` (see below) |
+| Windows  | [WinFsp](https://winfsp.dev) | Install the latest stable release. Userspace driver, no kernel-approval steps. |
+
+**2. Install rclone with the Dataverse backend.** Until the backend
+lands upstream in [`rclone/rclone`](https://github.com/rclone/rclone),
+build from our fork:
+
+```bash
+git clone --branch dataverse-backend https://github.com/ErykKul/rclone
+cd rclone
+go build -o rclone .                          # needs Go 1.25+
+./rclone version | head -1                    # smoke test
+```
+
+When the backend is upstreamed, switch to the official packages:
+`brew install rclone` / `winget install Rclone.Rclone` /
+`apt install rclone`.
+
+**3. Configure a remote:**
+
+```bash
+./rclone config create dv dataverse \
+  host=https://demo.dataverse.org \
+  dataset_pid=doi:10.70122/FK2/PPIAXE
+# add token=YOUR-TOKEN for restricted/draft datasets
+```
+
+**4. Mount:**
+
+```bash
+./rclone mount --read-only dv: ~/dv-mount         # Linux / macOS (macFUSE)
+./rclone nfsmount --read-only dv: ~/dv-mount      # macOS without macFUSE
+.\rclone.exe mount --read-only dv: X:             # Windows (WinFsp)
+```
+
+Stop with `Ctrl-C`, or `umount ~/dv-mount` (`fusermount -u` on Linux)
+from another terminal.
+
+**Globus on the native path.** Install [Globus Connect
+Personal](https://www.globus.org/globus-connect-personal) — native
+installers for Linux/macOS/Windows — and point `-restrict-paths` at
+the mountpoint (e.g. `-restrict-paths "R$HOME/dv-mount"`). Same free
+tier, same UX, no Docker.
 
 ## License
 
