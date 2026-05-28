@@ -270,8 +270,9 @@ download a pre-built binary from the fork's release page at
 
 ```bash
 # Pick the file for your platform: rclone-linux-amd64,
-# rclone-linux-arm64, rclone-darwin-amd64, rclone-darwin-arm64,
-# or rclone-windows-amd64.exe.
+# rclone-linux-arm64, rclone-darwin-arm64 (Apple Silicon),
+# or rclone-windows-amd64.exe. Intel-Mac users: build from source
+# (see "Or `go build`…" note below).
 curl -fsSL -o rclone \
   https://github.com/ErykKul/rclone/releases/download/dataverse-backend-latest/rclone-darwin-arm64
 chmod +x rclone
