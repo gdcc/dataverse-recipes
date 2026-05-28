@@ -18,10 +18,11 @@
 #   status        — diagnostic: is the mount live? is GCP running?
 #   shell         — drop into a bash shell. For debugging the image.
 #
-# Required env in `mount`/`mount-globus`: DV_HOST, DV_TOKEN, DATASET_PID.
-# Optional env: DATASET_VERSION (default :latest), VFS_CACHE_MODE
-# (default minimal), VFS_CACHE_MAX_AGE (default 1h), RCLONE_LOG_LEVEL
-# (default INFO).
+# Required env in `mount`/`mount-globus`: DV_HOST, DATASET_PID.
+# Optional env: DV_TOKEN (blank = guest access to public datasets),
+# DATASET_VERSION (default :latest), INGEST_FORMAT (default original),
+# VFS_CACHE_MODE (default minimal), VFS_CACHE_MAX_AGE (default 1h),
+# RCLONE_LOG_LEVEL (default INFO).
 
 set -euo pipefail
 
