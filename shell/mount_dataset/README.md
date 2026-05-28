@@ -40,12 +40,23 @@ needs none of them: it talks to any standard Dataverse and runs
 Globus Connect Personal under Globus's free tier. Everything happens
 inside one Docker container on your own machine.
 
+**Works with any Dataverse storage backend.** The recipe only uses
+the standard Native API (`/api/datasets/.../versions/...` and
+`/api/access/datafile/{id}`), so it works the same on instances
+backed by local filesystem, S3, Swift, or anything else Dataverse
+supports. If the instance is on S3 *with* direct-download enabled,
+the backend automatically picks up the presigned-URL redirect and
+streams bytes straight from S3 (cutting Dataverse out of the data
+path); otherwise it streams through Dataverse's access endpoint with
+HTTP `Range` requests. Either way, only the bytes you actually read
+are fetched.
+
 ```text
            ┌──────────────────────────┐
-           │   docker container       │
-           │  ┌────────────────────┐  │     Dataverse  ──► presigned S3 URL
- ./data ◄──┼──┤ FUSE mount         │  │           ▲
-  (host)   │  │ rclone backend     │──┼───────────┘
+           │   docker container       │     Dataverse API
+           │  ┌────────────────────┐  │     (bytes proxied, or
+ ./data ◄──┼──┤ FUSE mount         │  │     302 to presigned S3
+  (host)   │  │ rclone backend     │──┼──►  when available)
            │  └────────────────────┘  │
            │  ┌────────────────────┐  │
            │  │ (optional)         │  │     Globus Transfer ◄── any
@@ -140,10 +151,14 @@ copy `sample.env` and edit by hand if you prefer).
   back. On our side, restarting the script re-fetches the file list,
   re-uses the Globus credentials in `./globus-state/`, and the
   endpoint reconnects automatically.
-- **Presigned-URL expiry mid-stream** (long single-file transfer
-  through a 1-hour AWS URL TTL). The rclone backend detects this,
-  fetches a fresh URL, and re-issues with `Range: bytes=N-` —
-  invisibly to the caller.
+- **Mid-stream connection breaks.** On a long single-file transfer
+  the backend transparently re-issues with `Range: bytes=N-` and
+  continues. On S3-direct instances that also covers the case where
+  the presigned URL expires mid-stream (typically a 1-hour AWS TTL):
+  the backend detects the failure, fetches a fresh URL, and resumes.
+  On proxy-mode instances (non-S3 storage, or S3 without
+  direct-download) the access URL doesn't expire, so it's just a
+  range continuation.
 - **Dataset gets a new version while we're running.** The file list
   is frozen at mount time so it can't shift under an in-progress
   transfer. New / removed files only show up after a restart.
@@ -193,9 +208,10 @@ The Docker image is built locally on first run. It's a multi-stage
 build:
 
 - Stage 1 (`golang:1.25`): clones a fork of [rclone](https://rclone.org)
-  that adds the Dataverse backend (read-only, presigned-URL caching,
-  tabular-ingest handling, mid-stream resume on long transfers) and
-  compiles the `rclone` binary.
+  that adds the Dataverse backend (read-only, works against any
+  Dataverse storage driver via the Native API, auto-uses S3 presigned
+  redirects when available, tabular-ingest handling, mid-stream
+  resume on long transfers) and compiles the `rclone` binary.
 - Stage 2 (`debian:bookworm-slim`): FUSE3, `tini`, `ca-certificates`,
   and — when built with `--build-arg INCLUDE_GLOBUS=1` (which
   `mount-globus.sh` does automatically) — Globus Connect Personal.
