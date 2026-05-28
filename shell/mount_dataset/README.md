@@ -226,7 +226,13 @@ build args will point at upstream and this note goes away.
 
 ## Building from source manually
 
-The scripts auto-build on first run. To build by hand:
+By default `./mount.sh` pulls `ghcr.io/erykkul/dataverse-mount:latest` (and `:latest-globus` for the Globus mode). Pulls fall back to a local build if the image isn't reachable. To force a local build instead, point `IMAGE_TAG` somewhere else:
+
+```bash
+IMAGE_TAG=dataverse-mount:local ./mount.sh
+```
+
+Or to build the image by hand:
 
 ```bash
 docker build -t dataverse-mount:local .                                      # mount-only

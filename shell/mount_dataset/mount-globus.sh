@@ -14,7 +14,7 @@ source "./lib.sh"
 
 require_docker
 
-IMAGE_TAG="${IMAGE_TAG:-dataverse-mount:local-globus}"
+IMAGE_TAG="${IMAGE_TAG:-ghcr.io/erykkul/dataverse-mount:latest-globus}"
 CONTAINER_NAME="${CONTAINER_NAME:-dv-mount-globus}"
 DATA_DIR="${DATA_DIR:-./data}"
 ENV_FILE="${ENV_FILE:-.env}"
@@ -70,7 +70,16 @@ ensure_image() {
   if docker image inspect "$IMAGE_TAG" >/dev/null 2>&1; then
     return
   fi
-  echo "Image $IMAGE_TAG not found, building with Globus included (5–10 minutes)…"
+  # If IMAGE_TAG looks like a remote reference, try a pull first. Fall through
+  # to a local build if the pull fails.
+  if [[ "$IMAGE_TAG" == *"/"* ]]; then
+    echo "Pulling $IMAGE_TAG…"
+    if docker pull "$IMAGE_TAG"; then
+      return
+    fi
+    echo "Pull failed, falling back to local build."
+  fi
+  echo "Building $IMAGE_TAG with Globus included (first time only, takes a few minutes)…"
   docker build --build-arg INCLUDE_GLOBUS=1 -t "$IMAGE_TAG" .
 }
 
