@@ -57,7 +57,7 @@ write_rclone_conf() {
   umask 077
   cat >"$RCLONE_CONFIG" <<EOF
 [dataverse]
-type = dataverse
+type = doi
 host = $DV_HOST
 token = $DV_TOKEN
 dataset_pid = $DATASET_PID

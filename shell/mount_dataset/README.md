@@ -210,7 +210,7 @@ The Docker image is built locally on first run. It's a multi-stage
 build:
 
 - Stage 1 (`golang:1.25`): clones a fork of [rclone](https://rclone.org)
-  that adds the Dataverse backend (read-only, works against any
+  that adds Dataverse direct mode to its `doi` backend (read-only, works against any
   Dataverse storage driver via the Native API, auto-uses S3 presigned
   redirects when available, tabular-ingest handling, mid-stream
   resume on long transfers) and compiles the `rclone` binary.
@@ -219,7 +219,7 @@ build:
   `mount-globus.sh` does automatically) — Globus Connect Personal.
 
 The rclone fork lives at
-[ErykKul/rclone, branch `dataverse-backend`](https://github.com/ErykKul/rclone/tree/dataverse-backend/backend/dataverse).
+[ErykKul/rclone, branch `dataverse-backend`](https://github.com/ErykKul/rclone/tree/dataverse-backend/backend/doi).
 When the backend is upstreamed (proposal in flight at
 [rclone/rclone](https://github.com/rclone/rclone)) the Dockerfile's
 build args will point at upstream and this note goes away.
@@ -293,7 +293,7 @@ upstreamed, switch to the official packages: `brew install rclone` /
 **3. Configure a remote:**
 
 ```bash
-./rclone config create dv dataverse \
+./rclone config create dv doi \
   host=https://demo.dataverse.org \
   dataset_pid=doi:10.70122/FK2/PPIAXE
 # add token=YOUR-TOKEN for restricted/draft datasets
