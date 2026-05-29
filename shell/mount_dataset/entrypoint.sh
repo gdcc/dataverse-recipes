@@ -59,7 +59,7 @@ write_rclone_conf() {
 [dataverse]
 type = doi
 host = $DV_HOST
-token = $DV_TOKEN
+token = ${DV_TOKEN:-}
 dataset_pid = $DATASET_PID
 version = ${DATASET_VERSION:-:latest}
 ingest_format = ${INGEST_FORMAT:-original}
