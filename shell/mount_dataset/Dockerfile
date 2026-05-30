@@ -77,5 +77,8 @@ WORKDIR /home/dvgr
 # and reads files there. To start Globus Connect Personal on top, pass
 # `mount-globus` (requires INCLUDE_GLOBUS=1 at build time and a one-time
 # `globus-setup` invocation).
-ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/entrypoint.sh"]
+# `tini -g` forwards signals to the whole process group, not just the
+# entrypoint script — so the rclone mount and (in mount-globus) GCP, its
+# children, also get SIGTERM on `docker stop` and shut down cleanly.
+ENTRYPOINT ["/usr/bin/tini", "-g", "--", "/usr/local/bin/entrypoint.sh"]
 CMD ["mount"]

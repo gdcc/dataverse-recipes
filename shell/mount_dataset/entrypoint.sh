@@ -22,6 +22,9 @@
 # Optional env: DV_TOKEN (blank = guest access to public datasets),
 # DATASET_VERSION (default :latest), INGEST_FORMAT (default original),
 # VFS_CACHE_MODE (default minimal), VFS_CACHE_MAX_AGE (default 1h),
+# DIR_CACHE_TIME (default 1000h — the listing is frozen at mount time so
+# there is nothing to expire; lower it only when mounting a live draft
+# you expect to change under you),
 # RCLONE_LOG_LEVEL (default INFO).
 
 set -euo pipefail
@@ -66,34 +69,44 @@ ingest_format = ${INGEST_FORMAT:-original}
 EOF
 }
 
-start_mount_background() {
+# Used by mount-globus. Starts rclone as a *supervised background job*
+# (not --daemon) so we keep its PID: the caller waits on it and tears the
+# whole stack down if the mount dies. Otherwise GCP would keep serving a
+# now-empty directory and a transfer would silently deliver nothing.
+RCLONE_PID=""
+start_mount_supervised() {
   mkdir -p "$MOUNTPOINT"
-  log "starting rclone mount on $MOUNTPOINT (background)"
+  log "starting rclone mount on $MOUNTPOINT (supervised)"
   rclone mount dataverse: "$MOUNTPOINT" \
     --allow-other \
     --allow-non-empty \
     --read-only \
     --vfs-cache-mode "${VFS_CACHE_MODE:-minimal}" \
     --vfs-cache-max-age "${VFS_CACHE_MAX_AGE:-1h}" \
-    --dir-cache-time 5m \
+    --dir-cache-time "${DIR_CACHE_TIME:-1000h}" \
     --umask 022 \
-    --daemon \
     --log-level "${RCLONE_LOG_LEVEL:-INFO}" \
-    --log-file "$RCLONE_LOG_FILE"
+    --log-file "$RCLONE_LOG_FILE" &
+  RCLONE_PID=$!
 
-  # rclone --daemon returns before the mount is actually serving; poll
-  # briefly. 30s is generous; a healthy mount comes up in ~1s.
+  # rclone serves a beat after launch; poll briefly. 30s is generous; a
+  # healthy mount comes up in ~1s. Bail early if rclone exits during
+  # startup (bad config/auth) rather than waiting the full window.
   log "waiting for $MOUNTPOINT to become a live mountpoint"
   for _ in $(seq 1 30); do
     if mountpoint -q "$MOUNTPOINT" && ls "$MOUNTPOINT" >/dev/null 2>&1; then
       log "mount is live"
       return 0
     fi
+    if ! kill -0 "$RCLONE_PID" 2>/dev/null; then
+      break
+    fi
     sleep 1
   done
 
   log "rclone log tail:"
   tail -30 "$RCLONE_LOG_FILE" || true
+  kill "$RCLONE_PID" 2>/dev/null || true
   fail "mount did not come up within 30s"
 }
 
@@ -132,7 +145,7 @@ case "$mode" in
       --read-only \
       --vfs-cache-mode "${VFS_CACHE_MODE:-minimal}" \
       --vfs-cache-max-age "${VFS_CACHE_MAX_AGE:-1h}" \
-      --dir-cache-time 5m \
+      --dir-cache-time "${DIR_CACHE_TIME:-1000h}" \
       --umask 022 \
       --log-level "${RCLONE_LOG_LEVEL:-INFO}"
     ;;
@@ -150,7 +163,7 @@ case "$mode" in
     fi
 
     write_rclone_conf
-    start_mount_background
+    start_mount_supervised
 
     log "$MOUNTPOINT top-level:"
     ls -la "$MOUNTPOINT" | head -10 || true
@@ -159,26 +172,40 @@ case "$mode" in
     # share the user's $HOME (only rclone.log lives there). We want
     # the dataset, read-only.
     GCP_PATHS="${GCP_RESTRICT_PATHS:-R$MOUNTPOINT}"
-    log "starting Globus Connect Personal in the foreground (restrict-paths=$GCP_PATHS)"
+    log "starting Globus Connect Personal (restrict-paths=$GCP_PATHS)"
     cd "$GCP_DIR"
     ./globusconnectpersonal -start -restrict-paths "$GCP_PATHS" &
     GCP_PID=$!
 
-    # Install the trap AFTER GCP_PID is captured so cleanup never
-    # races against the kick-off and finds GCP_PID empty. If a signal
-    # arrives in the tiny window before this, tini (PID 1) handles
-    # container shutdown.
+    # Supervise BOTH the mount and GCP. cleanup runs once, on EXIT; the
+    # signal traps just turn docker stop / Ctrl-C into an exit so that
+    # same cleanup fires. It unmounts and stops whichever process is
+    # still alive — so neither a GCP crash nor an rclone-mount death can
+    # leave the other half running. (A dead mount under a live GCP
+    # endpoint would otherwise serve an empty directory and silently
+    # deliver nothing — the worst outcome for the long transfers this
+    # mode exists for.)
     cleanup() {
-      log "shutdown requested; unmounting $MOUNTPOINT"
+      log "shutting down; unmounting $MOUNTPOINT"
       unmount_quiet
       if [[ -n "${GCP_PID:-}" ]]; then
-        log "stopping GCP (pid $GCP_PID)"
         kill -TERM "$GCP_PID" 2>/dev/null || true
-        wait "$GCP_PID" 2>/dev/null || true
       fi
+      if [[ -n "${RCLONE_PID:-}" ]]; then
+        kill -TERM "$RCLONE_PID" 2>/dev/null || true
+      fi
+      wait 2>/dev/null || true
     }
-    trap cleanup TERM INT
-    wait "$GCP_PID"
+    trap cleanup EXIT
+    trap 'exit 143' TERM
+    trap 'exit 130' INT
+
+    # Block until EITHER process exits; the EXIT trap then tears the
+    # survivor down. Exit non-zero so an orchestrator (docker restart
+    # policy, compose) treats a mid-session death as the failure it is.
+    wait -n "$RCLONE_PID" "$GCP_PID" || true
+    log "a supervised process exited; shutting everything down"
+    exit 1
     ;;
 
   globus-setup)
