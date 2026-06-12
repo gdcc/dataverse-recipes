@@ -42,10 +42,13 @@ The storage identifier becomes:
 
 API used
 --------
-POST /api/datasets/:persistentId/addFiles?persistentId=<PID>
-with a multipart/form-data field "jsonData" containing a JSON array of
-file-metadata objects (the "add multiple files" variant of the Direct
-DataFile Upload/Replace API).
+1. GET /api/datasets/:persistentId/versions/:latest/files?persistentId=<PID>
+   to list existing files and avoid duplicates.
+
+2. POST /api/datasets/:persistentId/addFiles?persistentId=<PID>
+   with a multipart/form-data field "jsonData" containing a JSON array of
+   file-metadata objects (the "add multiple files" variant of the Direct
+   DataFile Upload/Replace API).
 """
 
 import argparse
@@ -123,14 +126,12 @@ def collect_files(base_dir: str):
 
 def build_file_metadata(
     abs_path: str,
-    store_id: str,
-    web_root: str,
+    storage_id: str,
     base_dir: str,
     verbose: bool = True,
 ) -> dict:
     """Return the JSON-serialisable metadata dict for one file."""
     filename = os.path.basename(abs_path)
-    storage_id = build_storage_identifier(store_id, web_root, abs_path)
     mime = guess_mime(filename)
 
     if verbose:
@@ -157,8 +158,47 @@ def build_file_metadata(
 
 
 # ---------------------------------------------------------------------------
-# Dataverse API call
+# Dataverse API calls
 # ---------------------------------------------------------------------------
+
+def get_existing_storage_identifiers(server: str, api_key: str, pid: str, store_id: str) -> set[str]:
+    """Fetch the list of files in the dataset and return their storage identifiers."""
+    encoded_pid = urllib.parse.quote(pid, safe="")
+    url = f"{server.rstrip('/')}/api/datasets/:persistentId/versions/:latest/files?persistentId={encoded_pid}"
+
+    req = urllib.request.Request(
+        url,
+        headers={
+            "X-Dataverse-key": api_key,
+        },
+    )
+
+    try:
+        with urllib.request.urlopen(req) as resp:
+            raw = resp.read().decode("utf-8")
+            data = json.loads(raw)
+    except urllib.error.HTTPError as exc:
+        raw = exc.read().decode("utf-8")
+        print(f"\n[ERROR] Failed to list dataset contents: HTTP {exc.code}: {exc.reason}", file=sys.stderr)
+        print(raw, file=sys.stderr)
+        sys.exit(1)
+    except Exception as exc:
+        print(f"\n[ERROR] Failed to list dataset contents: {exc}", file=sys.stderr)
+        sys.exit(1)
+
+    ids = set()
+    if data.get("status") == "OK":
+        for file_info in data.get("data", []):
+            storage_id = file_info.get("dataFile", {}).get("storageIdentifier")
+            if storage_id:
+                parsed = urllib.parse.urlparse(storage_id)
+                if parsed.scheme == store_id:
+                    # Dataverse may return identifiers like <store-id>://<uuid>//<path>
+                    # We normalize them to <store-id>:///<path> for local comparison.
+                    normalized = f"{parsed.scheme}:///{parsed.path.lstrip('/')}"
+                    ids.add(normalized)
+    return ids
+
 
 def add_files_to_dataset(
     server: str,
@@ -260,6 +300,10 @@ def parse_args():
         "--batch-size", type=int, default=100,
         help="Number of files to send per API call (default: 100).",
     )
+    p.add_argument(
+        "--limit", type=int,
+        help="Only register the first N files that don't exist on the server.",
+    )
     return p.parse_args()
 
 
@@ -281,15 +325,31 @@ def main():
         print("Nothing to do.")
         return
 
+    print(f"Checking existing files in dataset {args.pid} …")
+    existing_ids = get_existing_storage_identifiers(args.server, args.api_key, args.pid, args.store_id)
+    print(f"Found {len(existing_ids)} matching existing file(s) in dataset.\n")
+
     # Build metadata for every file.
     entries = []
+    skipped_count = 0
     for path in all_files:
-        print(f"Processing: {path}")
+        if args.limit is not None and len(entries) >= args.limit:
+            break
+
         try:
-            meta = build_file_metadata(path, args.store_id, web_root, base_dir)
+            storage_id = build_storage_identifier(args.store_id, web_root, path)
+            if storage_id in existing_ids:
+                skipped_count += 1
+                continue
+
+            print(f"Processing: {path}")
+            meta = build_file_metadata(path, storage_id, base_dir)
             entries.append(meta)
         except ValueError as exc:
             print(f"  [SKIP] {exc}", file=sys.stderr)
+
+    if skipped_count > 0:
+        print(f"\nSkipped {skipped_count} file(s) that already exist in the dataset.")
 
     if not entries:
         print("No valid entries produced.")

@@ -46,15 +46,18 @@ python add_remote_files.py \
 - `--web-root`: Local path prefix corresponding to the website root directory.
 - `--pid`: Dataset persistent identifier (e.g., DOI).
 - `--base-dir`: Local directory tree to scan for files.
+- `--limit`: (Optional) Only register the first N files that don't exist on the server.
 - `--dry-run`: (Optional) Build and print the JSON payload without calling the API.
 - `--batch-size`: (Optional) Number of files to send per API call (default: 100).
 
 ## How it works
 
 1. The script scans the `--base-dir` for all files.
-2. For each file, it:
-   - Calculates the MD5 hash.
+2. It fetches the existing file list from the Dataverse dataset to avoid duplicates.
+3. For each file, it:
+   - Constructs a `storageIdentifier` and checks if it already exists in the dataset.
+   - Calculates the MD5 hash (only for new files).
    - Guesses the MIME type.
-   - Constructs a `storageIdentifier` by stripping the `--web-root` from the absolute file path and prefixing it with the `--store-id`.
    - Determines the `directoryLabel` based on the relative path from `--web-root`.
-3. It sends the metadata in batches to the Dataverse `addFiles` API.
+4. If `--limit` is specified, it stops after finding the requested number of new files.
+5. It sends the metadata in batches to the Dataverse `addFiles` API.
