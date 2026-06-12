@@ -10,16 +10,16 @@ Dataverse and the specific dataset must be configured to use a remote store.
 The remote store id must match the --store-id parameter in this script, and
 the configured base-url must correspond to the --local-offset used, i.e.
 for a base-url https://example.com/shareddata, the URL
-https://example.com/sharedddata/file.txt must correspond the local path
+https://example.com/shareddata/file.txt must correspond the local path
 <local-offset>/file.txt. Further, a file in the --base-dir is expected to
 correspond to a URL matching the base-url plus the relative path difference
 between the --local-offset and the file path. (With the usage example below,
 a file.txt in the base dir should be accessible at
-https://example.com/sharedddata/project/files/file.txt)
+https://example.com/shareddata/project/files/file.txt)
 
 Usage
 -----
-python dataverse_remote_store_upload.py \\
+python add_remote_files.py \\
     --server    https://dataverse.example.org \\
     --api-key   xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx \\
     --store-id    trs \\
@@ -103,7 +103,9 @@ def build_storage_identifier(store_id: str, local_offset: str, abs_path: str) ->
             f"local-offset '{local_offset}'"
         )
 
-    remaining = abs_path[len(local_offset):]  # starts with '/' on POSIX
+    remaining = abs_path[len(local_offset):]
+    # Ensure we use forward slashes for the storage identifier
+    remaining = remaining.replace(os.sep, "/")
     if not remaining.startswith("/"):
         remaining = "/" + remaining
 
@@ -149,7 +151,7 @@ def build_file_metadata(
         "description": "",
     }
     if dir_label:
-        entry["directoryLabel"] = dir_label
+        entry["directoryLabel"] = dir_label.replace(os.sep, "/")
 
     return entry
 
