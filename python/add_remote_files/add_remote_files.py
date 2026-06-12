@@ -8,12 +8,12 @@ identifier, filename, MIME type, MD5 hash) is sent to the Dataverse API.
 
 Dataverse and the specific dataset must be configured to use a remote store.
 The remote store id must match the --store-id parameter in this script, and
-the configured base-url must correspond to the --local-offset used, i.e.
+the configured base-url must correspond to the --web-root used, i.e.
 for a base-url https://example.com/shareddata, the URL
 https://example.com/shareddata/file.txt must correspond the local path
-<local-offset>/file.txt. Further, a file in the --base-dir is expected to
+<web-root>/file.txt. Further, a file in the --base-dir is expected to
 correspond to a URL matching the base-url plus the relative path difference
-between the --local-offset and the file path. (With the usage example below,
+between the --web-root and the file path. (With the usage example below,
 a file.txt in the base dir should be accessible at
 https://example.com/shareddata/project/files/file.txt)
 
@@ -23,18 +23,18 @@ python add_remote_files.py \\
     --server    https://dataverse.example.org \\
     --api-key   xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx \\
     --store-id    trs \\
-    --local-offset /mnt/data \\
+    --web-root /mnt/data \\
     --pid       doi:10.5072/FK27U7YBV \\
     --base-dir  /mnt/data/project/files
 
 Storage-identifier construction
 --------------------------------
 Given:
-  --local-offset  /mnt/data
+  --web-root  /mnt/data
   --store-id      trs
   file path       /mnt/data/project/files/subdir/file.csv
 
-The local offset is stripped from the absolute path to produce:
+The web root is stripped from the absolute path to produce:
   /project/files/subdir/file.csv
 
 The storage identifier becomes:
@@ -81,29 +81,29 @@ def guess_mime(filename: str) -> str:
     return mime or "application/octet-stream"
 
 
-def build_storage_identifier(store_id: str, local_offset: str, abs_path: str) -> str:
+def build_storage_identifier(store_id: str, web_root: str, abs_path: str) -> str:
     """
-    Strip *local_offset* from the start of *abs_path* to get the canonical
+    Strip *web_root* from the start of *abs_path* to get the canonical
     remote path, then format it as  <store-id>://<remaining path>.
 
     Example
     -------
     store-id     = "trs"
-    local_offset = "/mnt/data"
+    web_root = "/mnt/data"
     abs_path     = "/mnt/data/project/files/foo.csv"
     → "trs:///project/files/foo.csv"
     """
     # Normalise both paths so trailing slashes etc. don't cause problems.
-    local_offset = os.path.normpath(local_offset)
+    web_root = os.path.normpath(web_root)
     abs_path = os.path.normpath(abs_path)
 
-    if not abs_path.startswith(local_offset):
+    if not abs_path.startswith(web_root):
         raise ValueError(
             f"File path '{abs_path}' does not start with "
-            f"local-offset '{local_offset}'"
+            f"web-root '{web_root}'"
         )
 
-    remaining = abs_path[len(local_offset):]
+    remaining = abs_path[len(web_root):]
     # Ensure we use forward slashes for the storage identifier
     remaining = remaining.replace(os.sep, "/")
     if not remaining.startswith("/"):
@@ -124,13 +124,13 @@ def collect_files(base_dir: str):
 def build_file_metadata(
     abs_path: str,
     store_id: str,
-    local_offset: str,
+    web_root: str,
     base_dir: str,
     verbose: bool = True,
 ) -> dict:
     """Return the JSON-serialisable metadata dict for one file."""
     filename = os.path.basename(abs_path)
-    storage_id = build_storage_identifier(store_id, local_offset, abs_path)
+    storage_id = build_storage_identifier(store_id, web_root, abs_path)
     mime = guess_mime(filename)
 
     if verbose:
@@ -238,7 +238,7 @@ def parse_args():
         help="Remote store store-id configured in Dataverse, e.g. 'trs'.",
     )
     p.add_argument(
-        "--local-offset", required=True,
+        "--web-root", required=True,
         help=(
             "Local path prefix to strip before building the storage identifier, "
             "e.g. /mnt/data  →  trs:///project/files/foo.csv"
@@ -267,7 +267,7 @@ def main():
     args = parse_args()
 
     base_dir = os.path.abspath(args.base_dir)
-    local_offset = os.path.abspath(args.local_offset)
+    web_root = os.path.abspath(args.web_root)
 
     if not os.path.isdir(base_dir):
         print(f"[ERROR] --base-dir '{base_dir}' is not a directory.", file=sys.stderr)
@@ -286,7 +286,7 @@ def main():
     for path in all_files:
         print(f"Processing: {path}")
         try:
-            meta = build_file_metadata(path, args.store_id, local_offset, base_dir)
+            meta = build_file_metadata(path, args.store_id, web_root, base_dir)
             entries.append(meta)
         except ValueError as exc:
             print(f"  [SKIP] {exc}", file=sys.stderr)

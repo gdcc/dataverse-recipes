@@ -33,7 +33,7 @@ python add_remote_files.py \
     --server    https://dataverse.example.org \
     --api-key   xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx \
     --store-id  trs \
-    --local-offset /mnt/data \
+    --web-root /mnt/data \
     --pid       doi:10.5072/FK27U7YBV \
     --base-dir  /mnt/data/project/files
 ```
@@ -43,7 +43,7 @@ python add_remote_files.py \
 - `--server`: Base URL of the Dataverse server.
 - `--api-key`: Your Dataverse API token.
 - `--store-id`: Remote store ID configured in Dataverse (e.g., `trs`).
-- `--local-offset`: Local path prefix to strip before building the storage identifier.
+- `--web-root`: Local path prefix corresponding to the website root directory.
 - `--pid`: Dataset persistent identifier (e.g., DOI).
 - `--base-dir`: Local directory tree to scan for files.
 - `--dry-run`: (Optional) Build and print the JSON payload without calling the API.
@@ -55,6 +55,6 @@ python add_remote_files.py \
 2. For each file, it:
    - Calculates the MD5 hash.
    - Guesses the MIME type.
-   - Constructs a `storageIdentifier` by stripping the `--local-offset` from the absolute file path and prefixing it with the `--store-id`.
-   - Determines the `directoryLabel` based on the relative path from `--local-offset`.
+   - Constructs a `storageIdentifier` by stripping the `--web-root` from the absolute file path and prefixing it with the `--store-id`.
+   - Determines the `directoryLabel` based on the relative path from `--web-root`.
 3. It sends the metadata in batches to the Dataverse `addFiles` API.
