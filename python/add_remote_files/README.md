@@ -34,6 +34,7 @@ python add_remote_files.py \
     --api-key   xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx \
     --store-id  trs \
     --web-root /mnt/data \
+    --web-path /optional-prefix \
     --pid       doi:10.5072/FK27U7YBV \
     --base-dir  /mnt/data/project/files
 ```
@@ -44,6 +45,7 @@ python add_remote_files.py \
 - `--api-key`: Your Dataverse API token.
 - `--store-id`: Remote store ID configured in Dataverse (e.g., `trs`).
 - `--web-root`: Local path prefix corresponding to the website root directory.
+- `--web-path`: (Optional) Prefix to add to the web path in the storage identifier, useful when the web-root does not match the store's base-url.
 - `--pid`: Dataset persistent identifier (e.g., DOI).
 - `--base-dir`: Local directory tree to scan for files.
 - `--limit`: (Optional) Only register the first N files that don't exist on the server.
@@ -58,6 +60,6 @@ python add_remote_files.py \
    - Constructs a `storageIdentifier` and checks if it already exists in the dataset.
    - Calculates the MD5 hash (only for new files).
    - Guesses the MIME type.
-   - Determines the `directoryLabel` based on the relative path from `--web-root`.
+   - Determines the `directoryLabel` based on the relative path from `--web-root`, including any `--web-path` prefix.
 4. If `--limit` is specified, it stops after finding the requested number of new files.
 5. It sends the metadata in batches to the Dataverse `addFiles` API.

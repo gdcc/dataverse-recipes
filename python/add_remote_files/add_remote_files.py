@@ -7,38 +7,52 @@ Dataverse dataset.  No file bytes are transferred; only metadata (storage
 identifier, filename, MIME type, MD5 hash) is sent to the Dataverse API.
 
 Dataverse and the specific dataset must be configured to use a remote store.
-The remote store id must match the --store-id parameter in this script, and
-the configured base-url must correspond to the --web-root used, i.e.
-for a base-url https://example.com/shareddata, the URL
-https://example.com/shareddata/file.txt must correspond the local path
-<web-root>/file.txt. Further, a file in the --base-dir is expected to
-correspond to a URL matching the base-url plus the relative path difference
-between the --web-root and the file path. (With the usage example below,
-a file.txt in the base dir should be accessible at
-https://example.com/shareddata/project/files/file.txt)
+The remote store id must match the --store-id parameter in this script.
+
+The configured base-url of the remote store usually corresponds to the
+--web-root directory. If it doesn't, the --web-path parameter can be used
+to specify the additional path components.
+
+Example:
+  base-url: https://example.com/shareddata
+  web-root: /mnt/data
+  File /mnt/data/file.txt is accessible at https://example.com/shareddata/file.txt
+  (No --web-path needed)
+
+Example with --web-path:
+  base-url: https://web.tacc.utexas.edu
+  web-root: /corral/Texas-Robotics/web
+  web-path: /texasrobotics
+  File /corral/Texas-Robotics/web/file.txt is accessible at
+  https://web.tacc.utexas.edu/texasrobotics/file.txt
 
 Usage
 -----
 python add_remote_files.py \\
     --server    https://dataverse.example.org \\
     --api-key   xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx \\
-    --store-id    trs \\
+    --store-id  trs \\
     --web-root /mnt/data \\
+    --web-path /optional-prefix \\
     --pid       doi:10.5072/FK27U7YBV \\
     --base-dir  /mnt/data/project/files
 
-Storage-identifier construction
---------------------------------
+Storage-identifier and directoryLabel construction
+------------------------------------------------
 Given:
   --web-root  /mnt/data
-  --store-id      trs
-  file path       /mnt/data/project/files/subdir/file.csv
+  --web-path  /prefix  (optional)
+  --store-id  trs
+  file path   /mnt/data/project/files/subdir/file.csv
 
-The web root is stripped from the absolute path to produce:
-  /project/files/subdir/file.csv
+The web root is stripped from the absolute path and the web path is prepended:
+  /prefix/project/files/subdir/file.csv
 
 The storage identifier becomes:
-  trs:///project/files/subdir/file.csv
+  trs:///prefix/project/files/subdir/file.csv
+
+The directoryLabel becomes:
+  prefix/project/files/subdir
 
 API used
 --------
@@ -84,17 +98,19 @@ def guess_mime(filename: str) -> str:
     return mime or "application/octet-stream"
 
 
-def build_storage_identifier(store_id: str, web_root: str, abs_path: str) -> str:
+def build_storage_identifier(store_id: str, web_root: str, abs_path: str, web_path: str = "") -> str:
     """
     Strip *web_root* from the start of *abs_path* to get the canonical
-    remote path, then format it as  <store-id>://<remaining path>.
+    remote path. If *web_path* is provided, it is prepended to the result.
+    The final path is formatted as <store-id>://<path>.
 
     Example
     -------
     store-id     = "trs"
-    web_root = "/mnt/data"
+    web_root     = "/mnt/data"
     abs_path     = "/mnt/data/project/files/foo.csv"
-    → "trs:///project/files/foo.csv"
+    web_path     = "/remote/url/prefix"
+    → "trs:///remote/url/prefix/project/files/foo.csv"
     """
     # Normalise both paths so trailing slashes etc. don't cause problems.
     web_root = os.path.normpath(web_root)
@@ -112,9 +128,17 @@ def build_storage_identifier(store_id: str, web_root: str, abs_path: str) -> str
     if not remaining.startswith("/"):
         remaining = "/" + remaining
 
+    full_path = remaining
+    if web_path:
+        # Prepend web_path, ensuring we don't double up on slashes
+        wp = web_path.replace(os.sep, "/").rstrip("/")
+        if not wp.startswith("/"):
+            wp = "/" + wp
+        full_path = wp + remaining
+
     # Use double-slash after the scheme so the path is clearly absolute:
     # trs:///some/path  (scheme + empty authority + absolute path)
-    return f"{store_id}://{remaining}"
+    return f"{store_id}://{full_path}"
 
 
 def collect_files(base_dir: str):
@@ -127,7 +151,8 @@ def collect_files(base_dir: str):
 def build_file_metadata(
     abs_path: str,
     storage_id: str,
-    base_dir: str,
+    web_root: str,
+    web_path: str = "",
     verbose: bool = True,
 ) -> dict:
     """Return the JSON-serialisable metadata dict for one file."""
@@ -140,9 +165,19 @@ def build_file_metadata(
     if verbose:
         print(md5)
 
-    # Derive a directoryLabel relative to base_dir (optional but useful).
-    rel = os.path.relpath(os.path.dirname(abs_path), base_dir)
-    dir_label = rel if rel != "." else ""
+    # Derive a directoryLabel relative to web_root, prepending web_path if present.
+    rel = os.path.relpath(os.path.dirname(abs_path), web_root)
+    
+    parts = []
+    if web_path:
+        wp = web_path.strip("/").replace(os.sep, "/")
+        if wp:
+            parts.append(wp)
+            
+    if rel != ".":
+        parts.append(rel.replace(os.sep, "/"))
+    
+    dir_label = "/".join(parts)
 
     entry = {
         "storageIdentifier": storage_id,
@@ -152,7 +187,7 @@ def build_file_metadata(
         "description": "",
     }
     if dir_label:
-        entry["directoryLabel"] = dir_label.replace(os.sep, "/")
+        entry["directoryLabel"] = dir_label
 
     return entry
 
@@ -285,6 +320,14 @@ def parse_args():
         ),
     )
     p.add_argument(
+        "--web-path", default="",
+        help=(
+            "Optional prefix to add to the web path in the storage identifier, "
+            "useful when the web-root does not match the store's base-url. "
+            "e.g. /texasrobotics  →  trs:///texasrobotics/project/files/foo.csv"
+        ),
+    )
+    p.add_argument(
         "--pid", required=True,
         help="Dataset persistent identifier, e.g. doi:10.5072/FK27U7YBV",
     )
@@ -312,6 +355,7 @@ def main():
 
     base_dir = os.path.abspath(args.base_dir)
     web_root = os.path.abspath(args.web_root)
+    web_path = args.web_path
 
     if not os.path.isdir(base_dir):
         print(f"[ERROR] --base-dir '{base_dir}' is not a directory.", file=sys.stderr)
@@ -337,13 +381,13 @@ def main():
             break
 
         try:
-            storage_id = build_storage_identifier(args.store_id, web_root, path)
+            storage_id = build_storage_identifier(args.store_id, web_root, path, web_path)
             if storage_id in existing_ids:
                 skipped_count += 1
                 continue
 
             print(f"Processing: {path}")
-            meta = build_file_metadata(path, storage_id, base_dir)
+            meta = build_file_metadata(path, storage_id, web_root, web_path)
             entries.append(meta)
         except ValueError as exc:
             print(f"  [SKIP] {exc}", file=sys.stderr)
