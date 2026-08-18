@@ -37,6 +37,7 @@ In the following sections, you can find a list of available recipes for each lan
 
 - [Upload files using S3 direct upload](shell/s3_direct_upload)
 - [Download files from a dataset](shell/download)
+- [Mount a dataset as a local filesystem and use it as a network drive or Globus endpoint](shell/mount_dataset)
 - [Upgrade Dataverse](shell/upgrades)
 - [Testing](shell/testing)
 
